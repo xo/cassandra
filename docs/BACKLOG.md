@@ -108,13 +108,18 @@ Do D1 and D2 in one commit.
 This stays on `gocql/gocql` so the diff stays mechanical. W5 moves the
 dependency.
 
-## W3. Replace Travis with GitHub Actions and add golangci-lint
+## W3. Replace Travis with GitHub Actions and add golangci-lint. Done.
 
-On 2026-09-27, `.golangci.yml` and `.github/workflows/test.yml` were written
-with W16, and `golangci-lint run ./...` reports no issues. The item stays
-open until the workflow passes on GitHub, because it has not run yet.
-ScyllaDB joins the matrix when `dbmeta` pushes its ScyllaDB releases and the
-pin in the workflow moves (D21).
+Done on 2026-09-27. `.golangci.yml` and `.github/workflows/test.yml` came
+with W16. The first run on GitHub, run 36287363683 for `v0.1.0`, passed the
+unit, lint and releases jobs, and ran every integration test against
+Cassandra 3.11 and 5.0. ScyllaDB joins the matrix when `dbmeta` pushes its
+ScyllaDB releases and the pin in the workflow moves (D21).
+
+The run warned that `actions/checkout@v4` and `actions/setup-go@v5` target
+Node.js 20, which GitHub has deprecated. The workflow now uses `v7` of both,
+which run on Node.js 24. The releases job now keys its cache on the
+`go.sum` of `dbmeta`, because it checks out no other module.
 
 `.travis.yml` is already staged for deletion in the working tree.
 
