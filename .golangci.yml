@@ -1,0 +1,137 @@
+# Lint configuration. See D13 in docs/PLAN.md.
+#
+# The posture is `default: all` with a disable list, as in dburl and dbmeta. A
+# new linter that arrives in a release gets a look rather than silence. The
+# version is pinned in the workflow, so an upgrade cannot turn on a linter
+# that nobody chose.
+#
+# The rule for a finding: a linter that makes idiomatic Go worse is disabled
+# here, with the reason beside it. Only a real defect gets a code change. A
+# change made only to quiet a linter is itself a defect.
+version: "2"
+
+linters:
+  default: all
+  disable:
+    # Layout and naming rules that fight idiomatic Go. Short names such as db,
+    # c and s are the convention for a receiver or a local with a small scope.
+    - lll
+    - nlreturn
+    - varnamelen
+    - wsl
+    - wsl_v5
+    # A struct literal names the fields it sets. gocql.ClusterConfig alone has
+    # more than forty.
+    - exhaustruct
+    - exhaustruct_v5
+    # Complexity metrics. The DSN keys and the CQL types are each one switch,
+    # and splitting the switch hides the table.
+    - cyclop
+    - funlen
+    - gocognit
+    # A switch over reflect.Kind or gocql.Type names the cases it handles and
+    # falls through for the rest, which is the point of the switch.
+    - exhaustive
+    # The driver registers itself from init, as every database/sql driver
+    # does, and the CQL type tables are package level values that nothing
+    # changes.
+    - gochecknoinits
+    - gochecknoglobals
+    # The sentinel errors are constants of type Error (D7). The detail under
+    # ErrInvalidDSN is wrapped with %w, and err113 wants a sentinel for every
+    # detail.
+    - err113
+    # An error is wrapped once, where the context is known: conn wraps what
+    # the session returns, and database/sql wraps what ScanColumn returns with
+    # the column name.
+    - wrapcheck
+    # canonical returns nil and no error for a CQL NULL, because nil is the
+    # value of a NULL.
+    - nilnil
+    # `if err := f(); err != nil` is idiomatic Go.
+    - noinlineerr
+    # Most of the SQL is short and repeats on purpose, and CQL such as
+    # `SELECT t, t, l, t` is a column list and not a typo.
+    - goconst
+    - dupword
+    # The unit tests are in package cql, because they drive the unexported
+    # seam in session.go. The examples and the integration tests are in
+    # package cql_test.
+    - testpackage
+    # The examples need a server, so none of them has an Output comment.
+    - testableexamples
+    # Deprecated in golangci-lint 2.12.0. gomodguard_v2 replaces it, and
+    # default: all enables that.
+    - gomodguard
+
+  settings:
+    depguard:
+      rules:
+        main:
+          list-mode: strict
+          allow:
+            - $gostd
+            - github.com/apache/cassandra-gocql-driver/v2
+            - github.com/xo/cql
+            - gopkg.in/inf.v0
+    errcheck:
+      # A deferred Close after a read that checked Err has nothing left to
+      # report.
+      exclude-functions:
+        - (*database/sql.DB).Close
+        - (*database/sql.Rows).Close
+        - (*database/sql.Stmt).Close
+    ireturn:
+      allow:
+        - error
+        - stdlib
+        # A canonical value is any Go type that database/sql can take.
+        - empty
+        # The seam over gocql in session.go returns its own two interfaces,
+        # so that the unit tests can replace gocql with a fake.
+        - github.com/xo/cql.session
+        - github.com/xo/cql.iterator
+        # gocql describes a column type, and an authenticator, as an
+        # interface.
+        - github.com/apache/cassandra-gocql-driver/v2.TypeInfo
+        - github.com/apache/cassandra-gocql-driver/v2.Authenticator
+
+  exclusions:
+    rules:
+      # The examples show how to call the driver. A log.Fatal after a deferred
+      # Close is the usual shape of an example.
+      - path: example_test\.go
+        linters:
+          - gocritic
+      # A CQL identifier cannot be bound, so the integration tests build the
+      # name of the keyspace that each test creates into the statement.
+      - path: integration_test\.go
+        linters:
+          - gosec
+        text: G202
+      # The integration tests share one server, and ScyllaDB refuses schema
+      # changes that race each other.
+      - path: integration_test\.go
+        linters:
+          - paralleltest
+      # A test that expects QueryContext to fail has no rows to read or close,
+      # a loop closes its rows on each pass rather than deferring them to the
+      # end of the test, and the integration test reads every column with
+      # SELECT * on purpose.
+      - path: _test\.go
+        linters:
+          - rowserrcheck
+          - sqlclosecheck
+          - unqueryvet
+      # docs_test.go reads the files of this repository, which it finds by
+      # walking the repository itself.
+      - path: docs_test\.go
+        linters:
+          - gosec
+        text: G304
+      # TestCheckNamedValue passes an unsafe.Pointer to show that the driver
+      # refuses it.
+      - path: conn_test\.go
+        linters:
+          - gosec
+        text: G103

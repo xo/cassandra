@@ -351,7 +351,7 @@ one canonical Go type in all four places.
 | `date` | `time.Time`, at midnight UTC |
 | `time` | `time.Duration` since midnight |
 | `duration` | `gocql.Duration` |
-| `uuid`, `timeuuid` | `string`, in the form `8-4-4-4-12` |
+| `uuid`, `timeuuid` | `uuid.UUID`, from the standard library (D25) |
 | `inet` | `string` |
 | `list<T>`, `set<T>` | a slice of the element type that gocql chooses |
 | `map<K, V>` | a map of the key and value types that gocql chooses |
@@ -359,8 +359,11 @@ one canonical Go type in all four places.
 | a user defined type | `map[string]any` |
 
 The basic types follow the `driver.Value` set, so that every `sql.Scanner` in
-the standard library accepts them. `uuid`, `inet`, `varint` and `decimal`
-become strings for the same reason. The `pgx` stdlib adapter returns strings
+the standard library accepts them. `inet`, `varint` and `decimal` become
+strings for the same reason. `uuid` and `timeuuid` become the standard
+`uuid.UUID` of Go 1.27, as D25 decided, and `CheckNamedValue` converts a
+`uuid.UUID` argument to a `gocql.UUID`, because gocql knows only its own
+type. The `pgx` stdlib adapter returns strings
 for its UUID and numeric types. A caller that wants `gocql.UUID` or
 `*inf.Dec` scans into that type, and gocql decodes it.
 
@@ -441,6 +444,9 @@ const (
 	// ErrInvalidDSN is returned by ParseDSN, wrapped with the key or the
 	// part of the URL that is not valid.
 	ErrInvalidDSN Error = "invalid dsn"
+	// ErrNoContext is returned by stmt.Exec and stmt.Query, which take no
+	// context.
+	ErrNoContext Error = "a call with no context is not supported"
 )
 ```
 
@@ -546,15 +552,18 @@ type iterator interface {
 `session.go` also holds the two adapters over `*gocql.Session` and
 `*gocql.Iter`. The `query` adapter calls `Iter.RowData` once before it
 returns. `RowData` returns the error of the iterator and reads no row, so a
-refused statement fails from `query`. They are the only code that calls gocql to run a statement.
+refused statement fails from `query`. They are the only code that calls gocql
+to run a statement.
 
 `fake_test.go` holds a fake `session`. It records each statement, its values
 and its options, and it returns rows that a test sets up. The fake builds each
 column with `gocql.Marshal` and passes the bytes to `UnmarshalCQL`, so the
 decode path in a unit test is the real gocql code. `gocql.NewNativeType`
-builds the type of a native column. gocql has no public constructor for a
-collection type, so the collection rows are tested against a server until a
-way is found. That is W16.
+builds the type of any column. For a native type it takes the type code. For
+any other type it takes the name, such as
+`gocql.NewNativeType(4, gocql.TypeCustom, "map<text, int>")`, and parses it.
+`TupleTypeInfo` and `UDTTypeInfo` have exported fields, so a test also builds
+them directly.
 
 ### The tests
 
@@ -628,13 +637,54 @@ These claims from the models were wrong, and the design does not use them:
 - `clickhouse-go` passes its settings through the context, not through
   `ErrRemoveArgument`.
 
-## Open points for W16
+## What W16 measured
 
-These are small and they do not need Ken. W16 settles each one with a test:
+W16 settled the four open points of this design with tests, on 2026-09-27.
+It ran the unit tests, a fuzz test of the DSN, and the integration tests
+against Cassandra 3.11 and 5.0 and ScyllaDB 2025.1 and 2026.3, each started
+with `dbrun`.
 
-1. Which Go types `TypeInfo.Zero` reports for `inet`, `varint`, `decimal`,
-   `list`, `set`, `map`, `tuple` and a user defined type.
-2. Whether gocql returns each `RequestErr` type as a pointer or a value.
-3. A way to build a collection `TypeInfo` in a unit test.
-4. Whether gocql writes nothing to a scalar destination that it refuses. The
-   fallback in Scanning depends on it.
+1. `TypeInfo.Zero` reports `net.IP` for `inet`, `*big.Int` for `varint`,
+   `*inf.Dec` for `decimal`, `int` for `int`, `float32` for `float`,
+   `gocql.UUID` for `uuid`, `[]int` for `list<int>`, `map[string]int` for
+   `map<text, int>`, `[]any` for a tuple and `map[string]any` for a user
+   defined type. The table under Canonical values holds, and
+   `TestScanCanonical` pins every row.
+2. gocql returns each `RequestErr` type as a pointer. `errors.As` with a
+   `*gocql.RequestErrSyntax` finds a syntax error from a real server.
+3. `gocql.NewNativeType` builds a collection type from its name. See The
+   seam.
+4. gocql writes nothing to a scalar that it refuses, and the fallback in
+   Scanning is safe. gocql does write part of a slice before it fails:
+   `list<text>` into `*[]int` leaves `[]int{0, 0}`. So the driver does not
+   fall back for a slice, a map or a struct.
+
+The tests also found these facts. The design above already follows each one.
+
+- gocql `v2.1.2` cannot bind a tuple. It counts each element of a tuple
+  marker as a value of its own, and then it reads the column types without
+  that count. A statement with a tuple marker fails with `expected 25 values
+  send got 24`, or reads the wrong column type. The driver cannot correct
+  this. W18 reports it.
+- gocql decodes a tuple into `*[]any` with a panic when an element is NULL.
+  So the driver builds the canonical value of a tuple itself, from the
+  element captures.
+- gocql reports a NULL tuple as a tuple whose elements are all NULL.
+- gocql drops `frozen<...>` when it reads a type, and `String` on a
+  `TypeInfo` returns no CQL name. `typeName` builds the name.
+- `net/url` reads the text after the last colon of the host part as the
+  port. So `cql://h1:9042,h2` fails with `invalid port ":9042,h2"`, and a
+  list parses only when its last host has a port or when no host has one.
+  `FormatDSN` writes a list only when `net/url` reads it back, and uses
+  `host` keys otherwise. Open question 8 in `PLAN.md` asks whether the
+  driver splits the host part itself.
+- ScyllaDB refuses the type hint `(text)NULL`. ScyllaDB 2026.3 refuses
+  `SimpleStrategy`, because it uses tablets. ScyllaDB 2025.1 refuses a
+  lightweight transaction on a table with tablets. These are product
+  differences, and the integration tests skip each one with the reason.
+- `stmt.Exec` and `stmt.Query` take no context, and the driver never calls
+  `context.Background`. So they return a new error, `ErrNoContext`.
+  database/sql never calls them, because the driver has the forms that take
+  a context.
+- `Driver.Open` has no context either. It creates a `Connector` of its own,
+  and the `Close` of that one connection closes its session.

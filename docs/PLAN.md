@@ -31,7 +31,7 @@ so on. Decisions are numbered `D1`, `D2` and so on. The two series never mix.
 | [D14](#d14-the-licence-stays-as-upstream-wrote-it-decided) | The licence stays as upstream wrote it | Decided |
 | [D15](#d15-agent-skills-are-committed-as-copies-decided) | Agent skills are committed as copies | Decided |
 | [D16](#d16-every-text-a-person-reads-follows-simple-english-decided) | Every text a person reads follows simple-english | Decided |
-| [D17](#d17-the-driver-is-rewritten-to-docsdesignmd-decided-amends-d12) | The driver is rewritten to docs/DESIGN.md | Decided. Amends D12 |
+| [D17](#d17-the-driver-is-rewritten-to-docsdesignmd-decided-amends-d12-amended-by-d25) | The driver is rewritten to docs/DESIGN.md | Decided. Amends D12. Amended by D25 |
 | [D18](#d18-this-repository-carries-the-modern-driver-decided) | This repository carries the modern driver | Decided |
 | [D19](#d19-the-first-tag-is-v010-decided) | The first tag is v0.1.0 | Decided |
 | [D20](#d20-ci-starts-cassandra-with-dbrun-from-a-pinned-dbmeta-commit-decided) | CI starts Cassandra with dbrun from a pinned dbmeta commit | Decided |
@@ -39,6 +39,8 @@ so on. Decisions are numbered `D1`, `D2` and so on. The two series never mix.
 | [D22](#d22-the-duration-helpers-are-removed-decided) | The duration helpers are removed | Decided |
 | [D23](#d23-a-query-option-can-come-from-an-argument-or-from-the-context-decided) | A query option can come from an argument or from the context | Decided |
 | [D24](#d24-the-dsn-can-be-a-url-decided-amends-d5) | The DSN can be a URL | Decided. Amends D5 |
+| [D25](#d25-a-uuid-column-is-the-standard-uuiduuid-decided-amends-d17) | A uuid column is the standard uuid.UUID | Decided. Amends D17 |
+| [D26](#d26-the-decimal-type-stays-gopkgininfv0-decided) | The decimal type stays gopkg.in/inf.v0 | Decided |
 
 ### D1. The module path is github.com/xo/cql. Decided.
 
@@ -289,7 +291,10 @@ short sentences, the active voice, `can`, `will` and `must` in place of
 `should` and `may`, no semicolons, no em dashes, no contractions, the
 condition before the command, and one word for one meaning.
 
-### D17. The driver is rewritten to docs/DESIGN.md. Decided. Amends D12.
+### D17. The driver is rewritten to docs/DESIGN.md. Decided. Amends D12. Amended by D25.
+
+Amended by D25: a uuid column decodes into the standard uuid.UUID, not into
+a string.
 
 Ken accepted this on 2026-09-27.
 
@@ -437,10 +442,81 @@ repeats the alias list. W14 makes the change in `dburl`.
 
 `FormatDSN` writes the URL form.
 
+### D25. A uuid column is the standard uuid.UUID. Decided. Amends D17.
+
+Ken decided this on 2026-09-27.
+
+Go 1.27 has a `uuid` package in the standard library, with
+`type UUID [16]byte`. gocql knows only `gocql.UUID`: its marshal and unmarshal
+code switch on `gocql.UUID` and `[16]byte`, and a named type such as
+`uuid.UUID` matches neither. `uuid.UUID` has no `Value` or `Scan` method. So
+before this decision the driver refused to bind a `uuid.UUID`, and refused
+to scan into one, as a test showed.
+
+Now the driver handles the standard type itself:
+
+- `CheckNamedValue` converts a `uuid.UUID`, a `*uuid.UUID` and a
+  `sql.Null[uuid.UUID]` to a `gocql.UUID` before gocql sees it. Both types
+  are a `[16]byte`, so the conversion copies nothing.
+- The canonical value of a `uuid` or a `timeuuid` column is a `uuid.UUID`.
+  `*any`, a `sql.Scanner`, `Next` and `ColumnTypeScanType` all get it. D17
+  set a string, and this decision amends that.
+- `ScanColumn` sends a `*uuid.UUID` and a `**uuid.UUID` to
+  `sql.ConvertAssign` with the canonical value. `sql.Null[uuid.UUID]` works
+  with no special case, because the canonical value is assignable to its
+  field.
+
+A `*gocql.UUID` and a `*string` still go to gocql, as before.
+
+The cost is that `sql.NullString` and any other `sql.Scanner` that accepts
+only a string can no longer read a `uuid` column. Scan into `*string` for the
+text form.
+
+A collection that holds the standard type, such as `[]uuid.UUID` for a
+`list<uuid>`, is not supported in either direction. gocql does not convert
+the elements, and a conversion by reflection is much more code for a rare
+case. Ken chose to leave it out.
+
+### D26. The decimal type stays gopkg.in/inf.v0. Decided.
+
+Ken decided this on 2026-09-27.
+
+gocql `v2.1.2` decodes a CQL `decimal` into `*inf.Dec` and binds a decimal
+only from `inf.Dec`. So `gopkg.in/inf.v0` is in the module graph because
+gocql requires it, whatever this driver does. The driver imports it in
+`types.go` to turn a decimal into its canonical string, and the tests import
+it to bind a decimal.
+
+`inf.v0` has had no commit since March 2018, and its last tag is `v0.9.1`.
+Its repository is not archived. Replacements were looked at: shopspring,
+cockroachdb/apd and govalues decimal libraries, and a decimal type of the
+driver's own, built on `math/big` with `MarshalCQL` and `UnmarshalCQL`. Gemini
+proposed the second. Ken chose to keep `inf.v0`, because gocql brings it in
+and a replacement adds code or a dependency and removes neither.
+
+The aim is to remove the dependency when gocql allows it. If gocql changes
+how it reads or writes a `decimal`, for example to take a type from the
+standard library or to stop requiring `inf.Dec`, remove every import of
+`inf.v0` from this module. W19 tracks this.
+
 ## Open questions
 
 Do not decide an open question yourself. Ask Ken. When one is answered, it
 becomes a numbered decision above and leaves this list.
 
-There are no open questions. Ken answered the first seven on 2026-09-27, as
-D17 to D23 record.
+Ken answered the first seven on 2026-09-27, as D17 to D23 record. The next
+question takes the next number, so that "open question 1" in an older entry
+still means the question that D18 answered.
+
+8. Does the driver split the host part of a URL itself? W16 found that
+   `net/url` reads the text after the last colon of the host part as the
+   port. So `cql://h1:9042,h2` fails with `invalid port ":9042,h2"`, and a
+   list parses only when its last host has a port or when no host has one.
+   `dburl` sends one host, so W14 is not affected. A DSN that a person
+   writes by hand is. Today such a DSN can use the D5 form, or `host` keys
+   in the URL form (D24). The other answer is for `ParseDSN` to cut the host
+   part out of the DSN before it calls `url.Parse`, and to split it at each
+   comma itself. That is about twenty lines. It also reads a list that holds
+   IPv6 addresses, which D24 sends to `host` keys instead. This is the
+   pre-split option that D24 did not take for IPv6, so the answer is Ken's.
+

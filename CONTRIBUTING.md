@@ -7,6 +7,30 @@ before you change anything:
   Do not decide an open question yourself. Ask Ken.
 - [`docs/BACKLOG.md`](docs/BACKLOG.md) holds the planned work, in order.
 
+[`docs/DESIGN.md`](docs/DESIGN.md) is the design that the code follows, and
+[`CLAUDE.md`](CLAUDE.md) holds the rules. `CLAUDE.md` is written for a coding
+agent, and everything in it applies to a person.
+
+## Before you send a change
+
+Run these in the repository root. `gofmt -l .` must print nothing.
+
+```bash
+gofmt -l . && go vet ./... && go test -race -count=2 ./...
+golangci-lint run ./...
+```
+
+The unit tests need no server. The integration tests run against the server
+that `CQL_DSN` names, and they skip when it is empty. Start the server with
+`dbrun` from [`dbmeta`](https://github.com/xo/dbmeta), in a checkout next to
+this one. Do not start a container by hand (D20).
+
+```bash
+(cd ../dbmeta/test && go run ./cmd/dbrun start cassandra-5.0)
+export CQL_DSN=$(cd ../dbmeta/test && go run ./cmd/dbrun dsn --json cassandra-5.0 | jq -r '.[0].dsn')
+go test -race -count=1 -run Integration ./...
+```
+
 ## Writing text
 
 Load the `simple-english` skill before you write any text that a person

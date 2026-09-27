@@ -1,0 +1,120 @@
+# Tests cql on every push and pull request, and every night.
+#
+# The unit and lint jobs need no server. The integration jobs start each
+# server with dbrun from dbmeta, at the pinned commit below, and run the tests
+# with CQL_DSN set to it (D20 in docs/PLAN.md). dbrun is the only thing that
+# starts a server.
+#
+# The release list lives in dbmeta, and this workflow does not repeat it
+# (D21). A push tests the releases that dbmeta calls tested. The nightly run
+# adds the releases that dbmeta calls nightly. Only the Cassandra and ScyllaDB
+# entries are kept.
+name: Test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: "41 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  # The dbmeta commit whose dbrun starts the servers. A new pin is a commit in
+  # this repository (D20).
+  DBMETA_COMMIT: 546f2be8705c03c25e3cbc128e3ddd8244df57e0
+  # dbrun uses podman by default, and a GitHub runner has docker.
+  DBMETA_RUNNER: docker
+
+jobs:
+  unit:
+    name: Unit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Format
+        run: test -z "$(gofmt -l .)"
+      - name: Vet
+        run: go vet ./...
+      - name: Test
+        run: go test -race -count=2 ./...
+
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      # Pinned, because .golangci.yml sets default: all and a newer release
+      # can turn on a linter that nobody chose (D13).
+      - name: Install golangci-lint
+        run: go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.13.2
+      - name: Lint
+        run: golangci-lint run ./...
+
+  releases:
+    name: Releases
+    runs-on: ubuntu-latest
+    outputs:
+      names: ${{ steps.list.outputs.names }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: xo/dbmeta
+          ref: ${{ env.DBMETA_COMMIT }}
+          path: dbmeta
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: dbmeta/test/go.mod
+      - name: List
+        id: list
+        working-directory: dbmeta/test
+        run: |
+          selectors=tested
+          if [ "${{ github.event_name }}" = schedule ]; then
+            selectors="tested nightly"
+          fi
+          names=$(go run ./cmd/dbrun list --json --names $selectors |
+            jq -c '[.[] | select(startswith("cassandra-") or startswith("scylla-"))] | unique')
+          echo "names=$names" >> "$GITHUB_OUTPUT"
+
+  integration:
+    name: ${{ matrix.release }}
+    needs: releases
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        release: ${{ fromJSON(needs.releases.outputs.names) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: xo/dbmeta
+          ref: ${{ env.DBMETA_COMMIT }}
+          path: dbmeta
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Start ${{ matrix.release }}
+        working-directory: dbmeta/test
+        run: go run ./cmd/dbrun start ${{ matrix.release }}
+      - name: Test
+        run: |
+          # The dsn field is the DSN that dbmeta gives this driver, in the D5
+          # form, with the credentials and the timeouts of the server.
+          export CQL_DSN=$(cd dbmeta/test && go run ./cmd/dbrun dsn --json ${{ matrix.release }} | jq -r '.[0].dsn')
+          go test -race -count=1 -run Integration -v ./...
+      - name: Logs
+        if: failure()
+        working-directory: dbmeta/test
+        run: go run ./cmd/dbrun logs ${{ matrix.release }}

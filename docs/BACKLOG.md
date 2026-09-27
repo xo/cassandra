@@ -32,6 +32,8 @@ the defects found by reading the code on 2026-09-27. They are in the order
 they must be done. W1 to W4 come first, because they set up the layout, the
 CI and the tests that every later item uses.
 
+W18 came from what the tests of W16 found in gocql.
+
 The upstream sweep, done on 2026-09-27, found nothing new to import:
 
 - `MichaelS11/go-cql-driver` is archived and has issues disabled. The API
@@ -58,7 +60,10 @@ The defects come from the projects that use this driver:
 
 The last section holds items that people raised and that have no priority yet.
 
-## W1. Write CLAUDE.md, CONTRIBUTING.md and README.md
+## W1. Write CLAUDE.md, CONTRIBUTING.md and README.md. Done.
+
+Done on 2026-09-27, with the rewrite. `docs_test.go` holds the rule for the
+root documents.
 
 Write the three root documents in the shape D3 sets, from
 `dbmeta/CLAUDE.md`, `dbmeta/CONTRIBUTING.md` and `dbmeta/README.md`.
@@ -85,7 +90,10 @@ agent skills (D15 and D16). Keep them. `CLAUDE.md` must tell an agent to load
 the `simple-english` skill before it writes any text that a person reads, and
 its table must name `CONTRIBUTING.md` for adding or updating a skill.
 
-## W2. Move to github.com/xo/cql and Go 1.27.1
+## W2. Move to github.com/xo/cql and Go 1.27.1. Done.
+
+Done on 2026-09-27, as part of W16. `go.mod` names `github.com/xo/cql`, and
+the Go 1.10 files are gone with the rest of the old code.
 
 Do D1 and D2 in one commit.
 
@@ -102,6 +110,12 @@ dependency.
 
 ## W3. Replace Travis with GitHub Actions and add golangci-lint
 
+On 2026-09-27, `.golangci.yml` and `.github/workflows/test.yml` were written
+with W16, and `golangci-lint run ./...` reports no issues. The item stays
+open until the workflow passes on GitHub, because it has not run yet.
+ScyllaDB joins the matrix when `dbmeta` pushes its ScyllaDB releases and the
+pin in the workflow moves (D21).
+
 `.travis.yml` is already staged for deletion in the working tree.
 
 Add `.github/workflows/test.yml` in the shape of
@@ -116,12 +130,18 @@ The integration jobs get a server as D20 sets out: check out `xo/dbmeta`
 at a pinned commit and start each release with `dbrun`. The release list
 comes from `dbrun list --json` (D21). Set `DBMETA_RUNNER=docker`.
 
-## W4. Split the tests into unit and integration tests
+## W4. Split the tests into unit and integration tests. Done.
+
+Done on 2026-09-27, as part of W16. The unit tests need no server and run
+in parallel. `integration_test.go` reads `CQL_DSN`, skips when it is empty,
+and creates one keyspace for each test, named for the time, with
+`NetworkTopologyStrategy` in the data center of the node. `TestParseDSN`
+parses both forms that `dbrun` prints (D20). The old flag tests are gone.
 
 Do D11.
 
 - Remove the `flag` parsing from `TestMain` in `cql_test.go`, along with the
-  package level test variables it fills: `TestHostValid`, `TestHostInvalid`,
+  package level test variables it fills: the valid host, the invalid host,
   `EnableAuthentication`, `Username`, `Password` and the timeouts.
 - Read `CQL_DSN`. A test that needs a server calls `t.Skip` when it is empty.
 - `config_test.go` already needs no server. Make sure it runs, and that it
@@ -135,7 +155,9 @@ Do D11.
 Add a test that the DSN from `dbrun dsn` parses (D20). Measure the result
 against Cassandra 3.11 and 5.0 with `dbrun` before you close this item.
 
-## W5. Move to apache/cassandra-gocql-driver/v2
+## W5. Move to apache/cassandra-gocql-driver/v2. Done.
+
+Done on 2026-09-27, as part of W16. The driver uses `v2.1.2`.
 
 Do D6. Do W17 first, because `xo/cqlsql` has already done most of this work
 and the work must not happen twice (D18).
@@ -146,7 +168,11 @@ Replace `github.com/gocql/gocql` with
 `v2` API. The four `ClusterConfig` fields that `config.go` sets are all still
 there.
 
-## W6. Return every error to the caller
+## W6. Return every error to the caller. Done.
+
+Done on 2026-09-27, as part of W16. `TestErrorsReachTheCaller` and
+`TestIntegrationErrors` cover a syntax error, a missing table, a missing
+keyspace and a wrong password, against the fake and against real servers.
 
 Do D9. Source: `xo/usql` #58, `xo/dbmeta` D62.
 
@@ -169,7 +195,11 @@ that does not exist, a wrong password, and a keyspace that does not exist.
 Confirm that each one fails before the fix. After it, each must return the
 server's error from the first call that can.
 
-## W7. Report a CQL NULL as nil
+## W7. Report a CQL NULL as nil. Done.
+
+Done on 2026-09-27, as part of W16. `SELECT (text)NULL` scans into an
+invalid `sql.Null[string]` on Cassandra 3.11 and 5.0. `dbmeta` can drop its
+`pad` scanner once W14 lands.
 
 Do D10. Source: `xo/dbmeta` D62 and `dbmeta/docs/NULLS.md`.
 
@@ -182,7 +212,9 @@ Start with a test that selects `(text)NULL` and a NULL of every other CQL
 type, scans each into `sql.Null[T]`, and expects `Valid` to be false. Then
 tell `dbmeta` that it can remove the `pad` scanner in its Cassandra model.
 
-## W8. Stop storing a context
+## W8. Stop storing a context. Done.
+
+Done on 2026-09-27, as part of W16.
 
 Do the context part of D7.
 
@@ -195,7 +227,11 @@ Remove the field. `database/sql` calls `PrepareContext`, `ExecContext` and
 `QueryContext` whenever the driver has them, so the methods with no context
 exist only to satisfy the interfaces.
 
-## W9. Remove package level state
+## W9. Remove package level state. Done.
+
+Done on 2026-09-27, as part of W16. The consistency table is unexported,
+the driver logs nothing, and `FormatDSN` returns an error where the old code
+panicked.
 
 Do D8.
 
@@ -208,12 +244,18 @@ Do D8.
 - Replace the `var` errors in `globals.go` with constants of `type Error
   string`, per D7.
 
-## W10. Rename the exported types
+## W10. Rename the exported types. Done.
+
+Done on 2026-09-27, as part of W16, with the amendment in D17: `Connector`
+keeps its configuration in an unexported field.
 
 Do D12, using the table in `PLAN.md`. Name each receiver with one or two
 letters. Do W9 and W10 together, because both touch every exported name.
 
-## W11. Pass every gocql type through as a bind value
+## W11. Pass every gocql type through as a bind value. Done.
+
+Done on 2026-09-27, as part of W16, with one exception that the driver
+cannot correct: gocql `v2.1.2` cannot bind a tuple. See W18.
 
 `CqlStmt.ColumnConverter` runs every argument through
 `driver.DefaultParameterConverter`, which rejects any slice other than
@@ -226,7 +268,9 @@ on the connection and the statement, and let gocql's own marshalling decide
 what it accepts. Test a `list`, a `set`, a `map`, a `uuid`, a `duration` and
 a `varint` bound as arguments.
 
-## W12. Report column types
+## W12. Report column types. Done.
+
+Done on 2026-09-27, as part of W16.
 
 `cqlRowsStruct` implements `Columns` and nothing else. Implement
 `RowsColumnTypeDatabaseTypeName` and `RowsColumnTypeScanType` from
@@ -234,7 +278,12 @@ a `varint` bound as arguments.
 has no NOT NULL. `usql` and `dbmeta` both read column types through
 `database/sql`.
 
-## W13. Compare each DSN key with the driver
+## W13. Compare each DSN key with the driver. Done.
+
+Done on 2026-09-27, as part of W16. All 14 keys set a field that
+`ClusterConfig` in `v2.1.2` still has. `TestParseDSN`, `TestFormatDSNRoundTrip`
+and `FuzzParseDSN` round trip them. The comment on `ParseDSN` lists every key,
+and so does `README.md`.
 
 `config.go` accepts 14 keys and rejects anything else. After W5, compare each one
 with the `ClusterConfig` of `v2`. Write a table driven test that round trips
@@ -262,7 +311,9 @@ Do this after the first tag, which is `v0.1.0` (D19).
 
 Each change is made in its own repository by that repository's own rules.
 
-## W15. Share one gocql session per connector
+## W15. Share one gocql session per connector. Done.
+
+Done on 2026-09-27, as part of W16.
 
 D17 answers this: one session for each `Connector`. W16 builds it.
 
@@ -272,7 +323,10 @@ So `Connect` never fails, and the first failure surfaces later as
 `ErrBadConn` (W6). Whatever the answer to the question, create the session in
 `Connect` and return its error there.
 
-## W16. Rewrite the driver to docs/DESIGN.md
+## W16. Rewrite the driver to docs/DESIGN.md. Done.
+
+Done on 2026-09-27. "What W16 measured" in `docs/DESIGN.md` records what
+the tests found. The four open points of the design are settled there.
 
 Do D17, in this repository (D18). It needs W2, W5 and W17 first.
 
@@ -285,7 +339,13 @@ Settle the four points under "Open points for W16" at the end of
 `docs/DESIGN.md`, each with a test. Record what each test found in
 `docs/DESIGN.md`.
 
-## W17. Bring over the work in xo/cqlsql
+## W17. Bring over the work in xo/cqlsql. Done.
+
+Done on 2026-09-27. Nothing was brought over. The working tree of
+`xo/cqlsql` holds file renames, `io` in place of `io/ioutil`, and the import
+path of `v2`. W16 rewrote every file and made the move to `v2` itself. The
+work also kept every fault that W6 to W12 name, and it kept the exported
+`Logger` that D8 removes. Ken can archive `xo/cqlsql`.
 
 Do this before W5, because of D18. `xo/cqlsql` has uncommitted work in its
 working tree, at `../cqlsql`: 26 files, 733 lines added and 1016 removed.
@@ -297,8 +357,42 @@ reason for each.
 Do not change the `xo/cqlsql` working tree. When this item is done, tell Ken,
 and he archives `xo/cqlsql`.
 
+## W18. Report the tuple fault to apache/cassandra-gocql-driver
+
+W16 found that gocql `v2.1.2` cannot bind a tuple. When a statement holds a
+tuple marker, gocql counts each element of the tuple as a value of its own
+(`actualColCount` in `frame.go`). Then it reads the type of each value from
+the list of columns, which does not count the elements (`conn.go`, near the
+`expected %d values send got %d` error). A statement fails, or it marshals a
+value with the type of the wrong column.
+
+W16 also found that `gocql.Unmarshal` into a `*[]any` panics when an element
+of the tuple is NULL.
+
+Filing an issue in another project is Ken's decision. Once he agrees, write
+the report with a small program that fails, and link it here.
+
+## W19. Remove gopkg.in/inf.v0 when gocql allows it
+
+Do this when gocql changes how it handles a CQL `decimal`. Until then this
+item waits (D26).
+
+Today gocql `v2.1.2` decodes a `decimal` only into `*inf.Dec` and binds one
+only from `inf.Dec`. When a release of gocql stops requiring `inf.Dec`, remove
+every import of `gopkg.in/inf.v0` from this module: `types.go`, the tests, and
+the `depguard` list in `.golangci.yml`. Then run `go mod tidy`, and remove
+the entry from `go.mod` if gocql no longer requires the module. Read the
+release notes of each gocql upgrade for this change.
+
 ## Raised, with no priority
 
+- Decimals from another library. gocql binds a `decimal` column only from
+  `inf.Dec` (D26). A decimal type whose `driver.Valuer` returns a string, as
+  shopspring's does, therefore fails on a `decimal` column. The driver
+  cannot see the column type when it checks an argument. A wrapper with
+  `MarshalCQL` can, because gocql passes it the type of the column. That
+  would let a string bind to a `decimal`. Measure the need before you build
+  it.
 - Named parameters. The driver refuses `sql.Named` with `ErrNamedArgs`
   (`docs/DESIGN.md`). CQL has `:name` bind markers, but gocql `v2.1.2` has no
   call that binds a value by name.
