@@ -1,0 +1,7 @@
+# Every text file is LF on every checkout, including a checkout on Windows.
+#
+# Git for Windows writes CRLF by default. The skill copies under .agents and
+# .claude must keep the same bytes on every machine, because
+# TestSkillsAreCopies compares them. The same rule holds in dbmeta and in the
+# other xo repositories. See D15 in docs/PLAN.md.
+* text=auto eol=lf
