@@ -24,10 +24,12 @@ permissions:
   contents: read
 
 env:
-  # The dbmeta commit whose dbrun starts the servers, and prints the url of each
-  # principal (dbmeta D102). It is the pin of dbimp, which is v0.4.0 of dbmeta. A
-  # new pin is a commit in this repository (D20).
-  DBMETA_COMMIT: 938892840f0c0f09a5a0292f03a42833bb8b3378
+  # The dbmeta commit whose dbrun starts the servers. It is v0.7.0 of dbmeta, which
+  # names the Cassandra dialect cassandra, makes the dsn field of every Cassandra
+  # and ScyllaDB release the URL cassandra://, and adds the ordinary role
+  # dbmeta_user as the principal with role "user" (dbmeta D102 and D167). A new
+  # pin is a commit in this repository (D20).
+  DBMETA_COMMIT: abe2ca13cf392e239913b02ea5a8fce22f73279b
   # The owner that dbrun records for each server that this workflow starts, so
   # that it never stops one that another run started (dbmeta D98).
   DBMETA_OWNER: cassandra-ci
@@ -121,11 +123,13 @@ jobs:
         run: go run ./cmd/dbrun start ${{ matrix.release }}
       - name: Test
         run: |
-          # The url field is the DSN of the driver, with the credentials of the
-          # server. dbrun writes the scheme of the product for a ScyllaDB
-          # release, and the driver has the one name cassandra (D31), so the
-          # scheme is rewritten here, as dburl does.
-          export CASSANDRA_DSN=$(cd dbmeta/test && go run ./cmd/dbrun dsn --json ${{ matrix.release }} | jq -r '.[0].url' | sed 's#^scylla://#cassandra://#')
+          # The dsn field is what sql.Open takes, and it holds the scheme cassandra
+          # for every release, ScyllaDB too (dbmeta D167). CASSANDRA_DSN is the
+          # administrator, and CASSANDRA_ORDINARY_DSN is the ordinary user that
+          # dbmeta makes, which dbrun names with the role "user".
+          info=$(cd dbmeta/test && go run ./cmd/dbrun dsn --json ${{ matrix.release }})
+          export CASSANDRA_DSN=$(echo "$info" | jq -r '.[0].dsn')
+          export CASSANDRA_ORDINARY_DSN=$(echo "$info" | jq -r '[.[0].principals[]? | select(.role == "user") | .dsn][0] // empty')
           go test -race -count=1 -run Integration -v ./...
       - name: Logs
         if: failure()

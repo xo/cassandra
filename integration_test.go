@@ -314,3 +314,34 @@ func TestIntegrationBatchAndLightweightTransaction(t *testing.T) {
 		t.Errorf("got %v, want %v", err, dbimp.ErrNotSupported)
 	}
 }
+
+// TestIntegrationOrdinary runs as the ordinary user that dbmeta makes, which
+// can read the system tables and nothing else. It is skipped when
+// CASSANDRA_ORDINARY_DSN is empty.
+func TestIntegrationOrdinary(t *testing.T) {
+	db, ks := openTestDB(t)
+	dsn := os.Getenv("CASSANDRA_ORDINARY_DSN")
+	if dsn == "" {
+		t.Skip("CASSANDRA_ORDINARY_DSN is empty")
+	}
+	exec(t, db, "CREATE TABLE "+ks+".o (id int PRIMARY KEY, v text)")
+	exec(t, db, "INSERT INTO "+ks+".o (id, v) VALUES (1, 'a')")
+	user, err := sql.Open("cassandra", dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer user.Close()
+	if err := user.PingContext(t.Context()); err != nil {
+		t.Fatalf("pinging as the ordinary user: %v", err)
+	}
+	var version string
+	if err := user.QueryRowContext(t.Context(), "SELECT release_version FROM system.local").Scan(&version); err != nil || version == "" {
+		t.Errorf("reading the version as the ordinary user: %q, %v", version, err)
+	}
+	// The ordinary user has no permission on the table of the test, and the
+	// error reaches the caller as the error of gocql.
+	_, err = user.QueryContext(t.Context(), "SELECT v FROM "+ks+".o WHERE id = 1")
+	if _, ok := errors.AsType[*gocql.RequestErrUnauthorized](err); !ok {
+		t.Errorf("reading a table with no permission: got %v (%T), want *gocql.RequestErrUnauthorized", err, err)
+	}
+}
