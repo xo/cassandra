@@ -1,14 +1,22 @@
-# Lint configuration. See D13 in docs/PLAN.md.
+# Lint configuration. See D13 in docs/decisions.
 #
-# The posture is `default: all` with a disable list, as in dburl and dbmeta. A
-# new linter that arrives in a release gets a look rather than silence. The
-# version is pinned in the workflow, so an upgrade cannot turn on a linter
-# that nobody chose.
+# The posture is `default: all` with a disable list, as in dbimp, dburl and
+# dbmeta (D13). A new linter that arrives in a release gets a look rather than
+# silence. The version is pinned in the workflow, so an upgrade cannot turn on
+# a linter that nobody chose.
 #
 # The rule for a finding: a linter that makes idiomatic Go worse is disabled
 # here, with the reason beside it. Only a real defect gets a code change. A
 # change made only to quiet a linter is itself a defect.
+#
+# Two hard rules in AGENTS.md are held here rather than by review. depguard
+# keeps the dependencies to the list of hard rule 6. forbidigo bans
+# context.Background and context.TODO, and the database/sql calls that take no
+# context (hard rule 4).
 version: "2"
+
+run:
+  modules-download-mode: readonly
 
 linters:
   default: all
@@ -29,6 +37,9 @@ linters:
     - cyclop
     - funlen
     - gocognit
+    - gocyclo
+    - maintidx
+    - nestif
     # A switch over reflect.Kind or gocql.Type names the cases it handles and
     # falls through for the rest, which is the point of the switch.
     - exhaustive
@@ -38,8 +49,8 @@ linters:
     - gochecknoinits
     - gochecknoglobals
     # The sentinel errors are constants of type Error (D7). The detail under
-    # ErrInvalidDSN is wrapped with %w, and err113 wants a sentinel for every
-    # detail.
+    # a sentinel error of dbimp is wrapped with %w, and err113 wants a sentinel
+    # for every detail.
     - err113
     # An error is wrapped once, where the context is known: conn wraps what
     # the session returns, and database/sql wraps what ScanColumn returns with
@@ -54,15 +65,21 @@ linters:
     # `SELECT t, t, l, t` is a column list and not a typo.
     - goconst
     - dupword
-    # The unit tests are in package cql, because they drive the unexported
+    # The unit tests are in package cassandra, because they drive the unexported
     # seam in session.go. The examples and the integration tests are in
-    # package cql_test.
+    # package cassandra_test.
     - testpackage
     # The examples need a server, so none of them has an Output comment.
     - testableexamples
-    # Deprecated in golangci-lint 2.12.0. gomodguard_v2 replaces it, and
-    # default: all enables that.
+    # depguard holds the dependency rule, and holding it twice means two places
+    # to change it. gomodguard is also deprecated.
     - gomodguard
+    - gomodguard_v2
+    # prealloc rewrites readable loops for a gain that nothing has measured.
+    - prealloc
+    # A byte count or a bit width in the decimal and the type code is named at
+    # the one place that sets it, and a constant for each reads worse.
+    - mnd
 
   settings:
     depguard:
@@ -72,8 +89,17 @@ linters:
           allow:
             - $gostd
             - github.com/apache/cassandra-gocql-driver/v2
-            - github.com/xo/cql
-            - gopkg.in/inf.v0
+            - github.com/cockroachdb/apd/v3
+            - github.com/xo/dbimp
+            - github.com/xo/cassandra
+    # Hard rule 4, and the database/sql half of it.
+    forbidigo:
+      analyze-types: true
+      forbid:
+        - pattern: ^context\.(Background|TODO)$
+          msg: take the context from the caller, never make one here
+        - pattern: ^\(\*database/sql\.(DB|Conn|Tx|Stmt)\)\.(Query|Exec|QueryRow|Prepare)$
+          msg: use the Context form, such as QueryContext
     errcheck:
       # A deferred Close after a read that checked Err has nothing left to
       # report.
@@ -83,14 +109,17 @@ linters:
         - (*database/sql.Stmt).Close
     ireturn:
       allow:
+        - anon
         - error
         - stdlib
+        # dbimp.Resolve returns the type of its caller.
+        - generic
         # A canonical value is any Go type that database/sql can take.
         - empty
         # The seam over gocql in session.go returns its own two interfaces,
         # so that the unit tests can replace gocql with a fake.
-        - github.com/xo/cql.session
-        - github.com/xo/cql.iterator
+        - github.com/xo/cassandra.session
+        - github.com/xo/cassandra.iterator
         # gocql describes a column type, and an authenticator, as an
         # interface.
         - github.com/apache/cassandra-gocql-driver/v2.TypeInfo
@@ -98,6 +127,13 @@ linters:
 
   exclusions:
     rules:
+      # A test builds its own context, and an example is a program of its own.
+      # A test holds text in other scripts on purpose, and sends SELECT * as a
+      # person does.
+      - path: _test\.go
+        linters:
+          - forbidigo
+          - gosmopolitan
       # The examples show how to call the driver. A log.Fatal after a deferred
       # Close is the usual shape of an example.
       - path: example_test\.go
@@ -111,7 +147,13 @@ linters:
         text: G202
       # The integration tests share one server, and ScyllaDB refuses schema
       # changes that race each other.
-      - path: integration_test\.go
+      - path: (integration|roundtrip_integration)_test\.go
+        linters:
+          - paralleltest
+          - thelper
+      # The contract counts the goroutines of the process, so its subtests run
+      # one after another (dbimptest.CheckGoroutines).
+      - path: contract_test\.go
         linters:
           - paralleltest
       # A test that expects QueryContext to fail has no rows to read or close,
@@ -129,6 +171,12 @@ linters:
         linters:
           - gosec
         text: G304
+      # The DSN tests hold a password in a URL on purpose, to see that the
+      # driver reads it and never repeats it.
+      - path: dsn_test\.go
+        linters:
+          - gosec
+        text: G101
       # TestCheckNamedValue passes an unsafe.Pointer to show that the driver
       # refuses it.
       - path: conn_test\.go

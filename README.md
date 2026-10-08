@@ -1,13 +1,13 @@
-# cql
+# cassandra
 
-`cql` is a Go `database/sql` driver for Apache Cassandra and ScyllaDB. It
+`cassandra` is a Go `database/sql` driver for Apache Cassandra and ScyllaDB. It
 wraps [the Apache Cassandra Go driver][gocql] (gocql) and registers itself as
-`cql`.
+`cassandra`.
 
 [gocql]: https://github.com/apache/cassandra-gocql-driver
 
 ```bash
-go get github.com/xo/cql
+go get github.com/xo/cassandra
 ```
 
 ## Use
@@ -17,10 +17,10 @@ import (
 	"database/sql"
 
 	gocql "github.com/apache/cassandra-gocql-driver/v2"
-	_ "github.com/xo/cql"
+	_ "github.com/xo/cassandra"
 )
 
-db, err := sql.Open("cql", "cql://cassandra:cassandra@127.0.0.1:9042/app")
+db, err := sql.Open("cassandra", "cassandra://cassandra:cassandra@127.0.0.1:9042/app")
 if err != nil {
 	return err
 }
@@ -41,30 +41,22 @@ connections to each node.
 
 To set a gocql option that the DSN cannot express, such as a host selection
 policy or a logger, build a `gocql.ClusterConfig` and open it with
-`sql.OpenDB(cql.NewConnector(cfg))`.
+`sql.OpenDB(cassandra.NewConnector(cfg))`.
 
 ## DSN
 
-A DSN has two forms. A DSN that starts with `cql://` or `cassandra://` is a
-URL:
+A DSN is a URL whose scheme is `cassandra`. The driver reads no other scheme
+and no other form (D31):
 
 ```text
-cql://user:password@host1:9042,host2:9042/keyspace?consistency=localQuorum
+cassandra://user:password@host1:9042/keyspace?consistency=localQuorum&host=host2:9042
 ```
 
-The user information sets the credentials, and the path names the keyspace.
-`net/url` refuses some lists of hosts: a list that holds an IPv6 address, and
-a list where an earlier host has a port and the last one has none. For those,
-add each host with a `host` key: `cql://[::1]:9042/ks?host=[::2]:9042`.
+The user information sets the credentials, the host part holds one host, and the
+path names the keyspace. Each `host` key adds one more host, in order, and any
+host can be an IPv6 address: `cassandra://[::1]:9042/ks?host=[::2]:9042` (D34).
 
-Any other DSN is a list of hosts, separated by commas, and a query. This is
-the form that the driver has always read:
-
-```text
-host1:9042,host2?keyspace=keyspace&username=user&password=password
-```
-
-Both forms take these keys:
+The query takes these keys, and each has the default of `gocql.NewCluster`:
 
 | Key | Value |
 | --- | --- |
@@ -79,41 +71,48 @@ Both forms take these keys:
 | `username`, `password` | the credentials |
 | `enableHostVerification` | `true` or `false`. Any TLS key turns TLS on. |
 | `certPath`, `keyPath`, `caPath` | the paths of the TLS files |
-| `host` | one more host. The key can repeat. |
+| `host` | one more host. This is the one key that can repeat. |
 
-An unknown key is an error. So is a key that appears twice, and a setting in
-two places, such as a keyspace in the path and in a `keyspace` key. A DSN
-with no host connects to `127.0.0.1`.
+An unknown key is an error that wraps `dbimp.ErrUnknownKey`, and a scheme other
+than `cassandra` wraps `dbimp.ErrScheme`. A key that appears twice, and a
+setting in two places, such as a keyspace in the path and in a `keyspace` key,
+are errors too. A DSN with no host connects to `127.0.0.1`.
 
 ## Arguments
 
 A statement takes its values at `?` markers. The driver passes every value
 that gocql can marshal: slices, maps, `gocql.UUID`, `gocql.Duration`,
-`*big.Int`, `*inf.Dec`, `net.IP`, a struct for a user defined type, and
-`gocql.UnsetValue`. The driver also takes the standard `uuid.UUID`, and
-`sql.Null[uuid.UUID]`, and converts each to a `gocql.UUID`. A collection of
-`uuid.UUID`, such as `[]uuid.UUID`, is not supported: use `[]gocql.UUID`. A `driver.Valuer`, such as `sql.Null[T]`, works as it
-does with any driver.
+`*big.Int`, `net.IP`, a struct for a user defined type, and `gocql.UnsetValue`.
+It also takes the types that a column returns: a `dbimp.Date`, a
+`dbimp.LocalTime`, a `dbimp.Interval`, an `*apd.Decimal`, a `netip.Addr`, a
+`dbimp.Vector` and the standard `uuid.UUID`. A collection of `uuid.UUID`, such
+as `[]uuid.UUID`, is not supported: use `[]gocql.UUID`. A `driver.Valuer`, such
+as `sql.Null[T]`, works as it does with any driver.
 
 A query option changes how one statement runs. Pass it among the arguments,
 or attach it to a context. An argument overrides the context, and the
 context overrides the DSN:
 
 ```go
-rows, err := db.QueryContext(ctx, "SELECT id FROM users WHERE org = ?", org, cql.PageSize(500))
+rows, err := db.QueryContext(ctx, "SELECT id FROM users WHERE org = ?", org, cassandra.WithPageSize(500))
 
-ctx = cql.WithOptions(ctx, cql.Consistency(gocql.LocalOne))
+ctx = cassandra.WithOptions(ctx, cassandra.WithConsistency(gocql.LocalOne))
 ```
 
-The options are `Consistency`, `SerialConsistency`, `PageSize`, `Idempotent`
-and `Timestamp`.
+The options are `WithConsistency`, `WithSerialConsistency`, `WithPageSize`,
+`WithIdempotent` and `WithTimestamp`, and the four that every
+`xo` driver takes (dbimp D109): `WithTimeout`, `WithReadonly`, `WithParameter`
+and `WithDatabase`. Cassandra has no read-only statement and no body of keys,
+so `WithReadonly(true)` and `WithParameter` fail the statement with an error
+that wraps `dbimp.ErrNotSupported`.
 
 ## Scanning
 
 Scan a column into any type that gocql can decode it into, such as
 `*[]string`, `*map[string]int`, `*gocql.UUID` or `*time.Time`, or into any
 type that `database/sql` can convert to. A `uuid` column also scans into
-`*uuid.UUID`, `**uuid.UUID` and `sql.Null[uuid.UUID]`. `*any` receives these Go types:
+`*uuid.UUID`, `**uuid.UUID` and `sql.Null[uuid.UUID]`. `*any` receives these Go
+types, which are the kinds of `dbimp` (dbimp D135 and D32 here):
 
 | CQL type | Go type |
 | --- | --- |
@@ -122,14 +121,20 @@ type that `database/sql` can convert to. A `uuid` column also scans into
 | `boolean` | `bool` |
 | `tinyint`, `smallint`, `int`, `bigint`, `counter` | `int64` |
 | `float`, `double` | `float64` |
-| `varint`, `decimal`, `inet` | `string` |
+| `decimal` | `*apd.Decimal` |
+| `varint` | `*big.Int` |
+| `inet` | `netip.Addr` |
 | `uuid`, `timeuuid` | `uuid.UUID`, from the standard library |
-| `timestamp`, `date` | `time.Time`, in UTC |
-| `time` | `time.Duration` |
-| `duration` | `gocql.Duration` |
-| `list`, `set`, `map`, `vector` | the slice or map that gocql chooses, such as `[]int` |
-| `tuple` | `[]any` |
-| a user defined type | `map[string]any` |
+| `timestamp` | `time.Time`, in UTC |
+| `date` | `dbimp.Date` |
+| `time` | `dbimp.LocalTime` |
+| `duration` | `dbimp.Interval` |
+| `list`, `set`, `tuple` | `[]any`, of the Go types of its elements |
+| `map` with a text key, a user defined type | `map[string]any` |
+| `vector` of numbers | `dbimp.Vector[T]` |
+
+[docs/CASSANDRA.md](docs/CASSANDRA.md) holds the whole table, with the scan type
+and the database type of each.
 
 A NULL scanned into a plain `*string` or `*int64` is an error, as it is with
 other drivers. To read a column that can be NULL, scan into `sql.Null[T]`, a
@@ -138,7 +143,7 @@ NULL, so a NULL scanned into a slice or a map gives nil and no error.
 
 ## Limits
 
-- CQL has no transactions. `BeginTx` returns `cql.ErrNoTransactions`. A batch
+- CQL has no transactions. `BeginTx` returns an error that wraps `dbimp.ErrNotSupported`. A batch
   is one CQL statement: pass the whole `BEGIN BATCH ... APPLY BATCH` text to
   `ExecContext`.
 - `ExecContext` returns `driver.ResultNoRows`, because Cassandra reports no
@@ -156,7 +161,7 @@ The unit tests need no server:
 go test -race ./...
 ```
 
-The integration tests run against the server that `CQL_DSN` names, and skip
+The integration tests run against the server that `CASSANDRA_DSN` names, and skip
 when it is empty. [CONTRIBUTING.md](CONTRIBUTING.md) shows how to start one.
 
 ## Design
@@ -164,13 +169,16 @@ when it is empty. [CONTRIBUTING.md](CONTRIBUTING.md) shows how to start one.
 | Document | Holds |
 | --- | --- |
 | [docs/DESIGN.md](docs/DESIGN.md) | the design of the driver |
-| [docs/PLAN.md](docs/PLAN.md) | every decision, and the open questions |
+| [docs/CASSANDRA.md](docs/CASSANDRA.md) | what is known about Cassandra and ScyllaDB, and the type table |
+| [docs/PLAN.md](docs/PLAN.md) | the purpose, what exists, the testing plan and the open questions |
+| [docs/decisions/](docs/decisions/README.md) | every decision, one file each |
+| [docs/PROGRESS.md](docs/PROGRESS.md) | where the work stands |
 | [docs/BACKLOG.md](docs/BACKLOG.md) | the planned work |
-| [CLAUDE.md](CLAUDE.md) | the rules for a coding agent |
+| [AGENTS.md](AGENTS.md) | the rules for a coding agent |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | the rules for a person |
 
 ## License
 
-MIT. `cql` began as a fork of
+MIT. `cassandra` began as a fork of
 [MichaelS11/go-cql-driver](https://github.com/MichaelS11/go-cql-driver), and
 [LICENSE](LICENSE) keeps its notice.

@@ -1,6 +1,6 @@
-# cql backlog
+# cassandra backlog
 
-This file records planned work for `cql`. Each item names the files,
+This file records planned work for `cassandra`. Each item names the files,
 decisions and issue numbers it touches, so that the work can start without
 rediscovering the context.
 
@@ -254,7 +254,7 @@ Do D8.
 Done on 2026-09-27, as part of W16, with the amendment in D17: `Connector`
 keeps its configuration in an unexported field.
 
-Do D12, using the table in `PLAN.md`. Name each receiver with one or two
+Do D12, using the table in `decisions/D012-exported-names-do-not-stutter.md`. Name each receiver with one or two
 letters. Do W9 and W10 together, because both touch every exported name.
 
 ## W11. Pass every gocql type through as a bind value. Done.
@@ -296,7 +296,10 @@ every key through `ConfigStringToClusterConfig` and
 `ClusterConfigToConfigString`. Record in `README.md` which keys exist, since
 `dburl` passes every unknown query parameter straight through (D5).
 
-## W14. Point dburl, usql and dbmeta at github.com/xo/cql
+## W14. Point dburl, usql and dbmeta at github.com/xo/cql. Superseded by W20.
+
+W20 renames the module before the first tag, so the three repositories move to
+`github.com/xo/cassandra` and not to the old path.
 
 Do this after the first tag, which is `v0.1.0` (D19).
 
@@ -377,7 +380,11 @@ of the tuple is NULL.
 Filing an issue in another project is Ken's decision. Once he agrees, write
 the report with a small program that fails, and link it here.
 
-## W19. Remove gopkg.in/inf.v0 when gocql allows it
+## W19. Remove gopkg.in/inf.v0 when gocql allows it. Superseded by W21.
+
+W21 removed every import of `gopkg.in/inf.v0` from this module (D32). The
+module stays in `go.sum`, because gocql requires it. The text below is what
+the item said before.
 
 Do this when gocql changes how it handles a CQL `decimal`. Until then this
 item waits (D26).
@@ -396,7 +403,7 @@ release notes of each gocql upgrade for this change.
   shopspring's does, therefore fails on a `decimal` column. The driver
   cannot see the column type when it checks an argument. A wrapper with
   `MarshalCQL` can, because gocql passes it the type of the column. That
-  would let a string bind to a `decimal`. Measure the need before you build
+  lets a string bind to a `decimal`. Measure the need before you build
   it.
 - Named parameters. The driver refuses `sql.Named` with `ErrNamedArgs`
   (`docs/DESIGN.md`). CQL has `:name` bind markers, but gocql `v2.1.2` has no
@@ -405,3 +412,38 @@ release notes of each gocql upgrade for this change.
   `QueryRowContext`, and `ExecContext` discards it. `RowsAffected` can
   report it as 0 or 1 instead. Measure what `usql` shows before you choose.
 
+## W20. Rename the module, the package and the driver to cassandra
+
+Ken decided this on 2026-10-08 (D27). The change in this repository is done and
+staged. What remains is in the other repositories, and each makes it by its own
+rules:
+
+- `dburl`: name the scheme and the driver `cassandra`, with `cql` as an alias.
+  Set `GoPackage` to `github.com/xo/cassandra`. Send the URL with the scheme
+  `cassandra://` (D24).
+- `usql`: import `github.com/xo/cassandra`, and register `cassandra`. Keep the
+  lexer name `cql`, which names the language.
+- `dbmeta`: change the import in `test/go.mod`, `test/cassandra_test.go` and
+  `test/cmd/dbrun/test.go`, and decide the name of the dialect (open question
+  12 in [PLAN.md](PLAN.md)).
+- Pin the new `dbmeta` commit in `.github/workflows/test.yml` when `dbmeta`
+  has moved, because the pinned commit still builds its tests with the old
+  module. The workflow sets `CASSANDRA_DSN` from `dbrun dsn`.
+
+Ken tags the module (open question 9).
+
+## W21. Move the driver to the drivers of dbimp
+
+Ken decided this on 2026-10-08 (D30 to D33). The change in this repository is
+done and staged: the DSN, the types, the options and the errors follow `dbimp`,
+and the tests cover each. What remains is in the other repositories, and each
+makes it by its own rules (W20):
+
+- `dburl`: the scheme and the driver name `cassandra`, with `cql`, `ca`,
+  `datastax`, `scy` and `scylla` as aliases, the URL as the DSN, and the
+  `GoPackage` (D35, open question 19).
+- `dbmeta`: `dbrun` prints `scylla://` for a ScyllaDB release, and it prints one
+  principal for Cassandra (open question 18). `dbmeta.Cassandra` becomes
+  `"cassandra"` (D35).
+- `usql`: import `github.com/xo/cassandra`, and register `cassandra`.
+- Ken tags the module `v0.1.0` when he says (D35).

@@ -1,4 +1,4 @@
-package cql
+package cassandra
 
 import (
 	"context"
@@ -9,6 +9,7 @@ import (
 	"uuid"
 
 	gocql "github.com/apache/cassandra-gocql-driver/v2"
+	"github.com/xo/dbimp"
 )
 
 // pingStmt is the statement that Ping runs. Every Cassandra release has the
@@ -53,14 +54,19 @@ func (c *conn) Close() error {
 	return nil
 }
 
-// Begin returns ErrNoTransactions.
+// Begin returns an error that wraps dbimp.ErrNotSupported.
 func (c *conn) Begin() (driver.Tx, error) {
-	return nil, ErrNoTransactions
+	return nil, errNoTransactions()
 }
 
-// BeginTx returns ErrNoTransactions.
+// BeginTx returns an error that wraps dbimp.ErrNotSupported. CQL has no
+// transactions, and a batch is a statement of its own.
 func (c *conn) BeginTx(context.Context, driver.TxOptions) (driver.Tx, error) {
-	return nil, ErrNoTransactions
+	return nil, errNoTransactions()
+}
+
+func errNoTransactions() error {
+	return fmt.Errorf("beginning a transaction: CQL has none: %w", dbimp.ErrNotSupported)
 }
 
 // Ping reads the release version of the node that answers.
@@ -75,7 +81,12 @@ func (c *conn) Ping(ctx context.Context) error {
 // driver.ResultNoRows, because Cassandra reports no row count and no insert
 // ID.
 func (c *conn) ExecContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Result, error) {
-	o, values := splitArgs(ctx, args)
+	o, values, err := resolve(ctx, args)
+	if err != nil {
+		return nil, err
+	}
+	ctx, cancel := o.withTimeout(ctx)
+	defer cancel()
 	if err := c.s.exec(ctx, query, values, o); err != nil {
 		return nil, fmt.Errorf("executing statement: %w", err)
 	}
@@ -85,12 +96,19 @@ func (c *conn) ExecContext(ctx context.Context, query string, args []driver.Name
 // QueryContext runs query and returns its rows. A statement that the server
 // refuses fails here, and not while the rows are read.
 func (c *conn) QueryContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
-	o, values := splitArgs(ctx, args)
+	o, values, err := resolve(ctx, args)
+	if err != nil {
+		return nil, err
+	}
+	ctx, cancel := o.withTimeout(ctx)
 	it, err := c.s.query(ctx, query, values, o)
 	if err != nil {
+		cancel()
 		return nil, fmt.Errorf("running query: %w", err)
 	}
-	return newRows(it), nil
+	r := newRows(it)
+	r.cancel = cancel
+	return r, nil
 }
 
 // CheckNamedValue decides which arguments go to gocql unchanged. database/sql
@@ -98,7 +116,11 @@ func (c *conn) QueryContext(ctx context.Context, query string, args []driver.Nam
 // CheckNamedValue returns driver.ErrSkip.
 func (c *conn) CheckNamedValue(nv *driver.NamedValue) error {
 	if nv.Name != "" {
-		return fmt.Errorf("%w: %s", ErrNamedArgs, nv.Name)
+		return fmt.Errorf("binding the named argument %q: gocql binds by position: %w", nv.Name, dbimp.ErrNotSupported)
+	}
+	if dbimp.IsOption[options](nv.Value) {
+		// resolve takes an Option out of the arguments.
+		return nil
 	}
 	switch v := nv.Value.(type) {
 	case uuid.UUID:
@@ -116,16 +138,21 @@ func (c *conn) CheckNamedValue(nv *driver.NamedValue) error {
 			nv.Value = gocql.UUID(v.V)
 		}
 		return nil
-	case nil, Option, gocql.Marshaler:
-		// An Option is taken out of the arguments by splitArgs. A Marshaler
+	case nil, gocql.Marshaler:
+		// A Marshaler
 		// comes before a Valuer, so that a type with both uses its CQL form.
 		return nil
-	case driver.Valuer:
+	}
+	if v, ok := bind(nv.Value); ok {
+		nv.Value = v
+		return nil
+	}
+	if _, ok := nv.Value.(driver.Valuer); ok {
 		return driver.ErrSkip
 	}
 	switch reflect.ValueOf(nv.Value).Kind() {
 	case reflect.Chan, reflect.Func, reflect.Complex64, reflect.Complex128, reflect.UnsafePointer:
-		return fmt.Errorf("%w: %T", ErrUnsupportedArg, nv.Value)
+		return fmt.Errorf("binding an argument of the type %T: %w", nv.Value, dbimp.ErrNotSupported)
 	}
 	// gocql marshals the value when the statement runs, and it returns an
 	// error that names both types when the value does not fit the column.

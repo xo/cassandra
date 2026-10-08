@@ -1,4 +1,4 @@
-package cql
+package cassandra
 
 import (
 	"context"
@@ -19,7 +19,7 @@ import (
 //
 //	cfg := gocql.NewCluster("10.0.0.1", "10.0.0.2")
 //	cfg.Logger = logger
-//	db := sql.OpenDB(cql.NewConnector(cfg))
+//	db := sql.OpenDB(cassandra.NewConnector(cfg))
 type Connector struct {
 	cfg        gocql.ClusterConfig
 	newSession func(gocql.ClusterConfig) (session, error)
@@ -58,7 +58,7 @@ func (c *Connector) Connect(ctx context.Context) (driver.Conn, error) {
 	return c.connect()
 }
 
-// Driver returns the cql driver.
+// Driver returns the cassandra driver.
 func (c *Connector) Driver() driver.Driver {
 	return Driver{}
 }

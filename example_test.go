@@ -1,4 +1,4 @@
-package cql_test
+package cassandra_test
 
 import (
 	"context"
@@ -7,13 +7,13 @@ import (
 	"time"
 
 	gocql "github.com/apache/cassandra-gocql-driver/v2"
-	"github.com/xo/cql"
+	"github.com/xo/cassandra"
 )
 
 // The examples need a server, so none of them checks its output.
 
 func Example() {
-	db, err := sql.Open("cql", "cql://cassandra:cassandra@127.0.0.1:9042/app?consistency=localQuorum")
+	db, err := sql.Open("cassandra", "cassandra://cassandra:cassandra@127.0.0.1:9042/app?consistency=localQuorum")
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -44,7 +44,7 @@ func ExampleNewConnector() {
 	cfg := gocql.NewCluster("10.0.0.1", "10.0.0.2")
 	cfg.Keyspace = "app"
 	cfg.PoolConfig.HostSelectionPolicy = gocql.TokenAwareHostPolicy(gocql.RoundRobinHostPolicy())
-	db := sql.OpenDB(cql.NewConnector(cfg))
+	db := sql.OpenDB(cassandra.NewConnector(cfg))
 	defer db.Close()
 	if err := db.PingContext(context.Background()); err != nil {
 		log.Fatal(err)
@@ -52,23 +52,23 @@ func ExampleNewConnector() {
 }
 
 func ExampleWithOptions() {
-	db, err := sql.Open("cql", "cql://127.0.0.1/app")
+	db, err := sql.Open("cassandra", "cassandra://127.0.0.1/app")
 	if err != nil {
 		log.Fatal(err)
 	}
 	defer db.Close()
 	// Every statement that runs with ctx reads at LOCAL_ONE.
-	ctx := cql.WithOptions(context.Background(), cql.Consistency(gocql.LocalOne))
+	ctx := cassandra.WithOptions(context.Background(), cassandra.WithConsistency(gocql.LocalOne))
 	// An argument overrides the context for one statement.
 	_, err = db.ExecContext(ctx, "UPDATE users SET name = ? WHERE id = ?", "ken", 1,
-		cql.Consistency(gocql.Quorum), cql.Timestamp(time.Now()))
+		cassandra.WithConsistency(gocql.Quorum), cassandra.WithTimestamp(time.Now()))
 	if err != nil {
 		log.Fatal(err)
 	}
 }
 
 func Example_batch() {
-	db, err := sql.Open("cql", "cql://127.0.0.1/app")
+	db, err := sql.Open("cassandra", "cassandra://127.0.0.1/app")
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -85,7 +85,7 @@ APPLY BATCH`, 1, "ken", "ken", 1)
 }
 
 func Example_lightweightTransaction() {
-	db, err := sql.Open("cql", "cql://127.0.0.1/app")
+	db, err := sql.Open("cassandra", "cassandra://127.0.0.1/app")
 	if err != nil {
 		log.Fatal(err)
 	}

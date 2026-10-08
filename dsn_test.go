@@ -1,12 +1,14 @@
-package cql
+package cassandra
 
 import (
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
 	gocql "github.com/apache/cassandra-gocql-driver/v2"
+	"github.com/xo/dbimp"
 )
 
 // dsnFields holds every setting that a DSN can express.
@@ -57,52 +59,49 @@ func TestParseDSN(t *testing.T) {
 		dsn  string
 		want func(*dsnFields)
 	}{
-		{"empty", "", func(f *dsnFields) { f.Hosts = []string{"127.0.0.1"} }},
-		{"one host", "h1", func(f *dsnFields) { f.Hosts = []string{"h1"} }},
-		{"hosts with spaces", " h1:9042 , h2 ", func(f *dsnFields) { f.Hosts = []string{"h1:9042", "h2"} }},
-		{"old form", "h1,h2?keyspace=ks&consistency=localQuorum&timeout=5s&connectTimeout=6s&numConns=3&username=u&password=p%26w",
+		{"one host", "cassandra://h1", func(f *dsnFields) { f.Hosts = []string{"h1"} }},
+		{"every key", "cassandra://h1?host=h2&keyspace=ks&consistency=localQuorum&timeout=5s&connectTimeout=6s&numConns=3&username=u&password=p%26w",
 			func(f *dsnFields) {
 				f.Hosts = []string{"h1", "h2"}
 				f.Keyspace, f.Consistency = "ks", gocql.LocalQuorum
 				f.Timeout, f.ConnectTimeout, f.NumConns = 5*time.Second, 6*time.Second, 3
 				f.Auth = &gocql.PasswordAuthenticator{Username: "u", Password: "p&w"}
 			}},
-		{"old form flags", "h1?ignorePeerAddr=true&disableInitialHostLookup=true&writeCoalesceWaitTime=1ms",
+		{"flags", "cassandra://h1?ignorePeerAddr=true&disableInitialHostLookup=true&writeCoalesceWaitTime=1ms",
 			func(f *dsnFields) {
 				f.Hosts = []string{"h1"}
 				f.IgnorePeerAddr, f.DisableInitialHostLookup, f.WriteCoalesceWaitTime = true, true, time.Millisecond
 			}},
-		{"old form tls", "h1?enableHostVerification=true&certPath=%2Fc&keyPath=%2Fk&caPath=%2Fa",
+		{"tls", "cassandra://h1?enableHostVerification=true&certPath=%2Fc&keyPath=%2Fk&caPath=%2Fa",
 			func(f *dsnFields) {
 				f.Hosts = []string{"h1"}
 				f.SSL = &gocql.SslOptions{EnableHostVerification: true, CertPath: "/c", KeyPath: "/k", CaPath: "/a"}
 			}},
-		{"url", "cql://u:p%40ss@h1:9042,h2:9043/ks?consistency=one",
+		{"url", "cassandra://u:p%40ss@h1:9042/ks?consistency=one&host=h2:9043",
 			func(f *dsnFields) {
 				f.Hosts = []string{"h1:9042", "h2:9043"}
 				f.Keyspace, f.Consistency = "ks", gocql.One
 				f.Auth = &gocql.PasswordAuthenticator{Username: "u", Password: "p@ss"}
 			}},
-		{"cassandra scheme in upper case", "CASSANDRA://h1", func(f *dsnFields) { f.Hosts = []string{"h1"} }},
-		{"url with no host", "cql:///ks", func(f *dsnFields) { f.Hosts, f.Keyspace = []string{"127.0.0.1"}, "ks" }},
-		{"url with user only", "cql://u@h1", func(f *dsnFields) {
+		{"scheme in upper case", "CASSANDRA://h1", func(f *dsnFields) { f.Hosts = []string{"h1"} }},
+		{"url with no host", "cassandra:///ks", func(f *dsnFields) { f.Hosts, f.Keyspace = []string{"127.0.0.1"}, "ks" }},
+		{"url with user only", "cassandra://u@h1", func(f *dsnFields) {
 			f.Hosts = []string{"h1"}
 			f.Auth = &gocql.PasswordAuthenticator{Username: "u"}
 		}},
-		{"url with hosts and no ports", "cql://h1,h2", func(f *dsnFields) { f.Hosts = []string{"h1", "h2"} }},
-		// The two forms that dbrun in dbmeta prints (D20).
-		{"dbrun dsn", "127.0.0.1:32768?username=cassandra&password=cassandra&timeout=30s&connectTimeout=30s",
+		{"url with hosts and no ports", "cassandra://h1?host=h2", func(f *dsnFields) { f.Hosts = []string{"h1", "h2"} }},
+		{"hosts with a query", "cassandra://127.0.0.1:32768?username=cassandra&password=cassandra&timeout=30s&connectTimeout=30s",
 			func(f *dsnFields) {
 				f.Hosts = []string{"127.0.0.1:32768"}
 				f.Timeout, f.ConnectTimeout = 30*time.Second, 30*time.Second
 				f.Auth = &gocql.PasswordAuthenticator{Username: "cassandra", Password: "cassandra"}
 			}},
-		{"dbrun url", "cassandra://cassandra:cassandra@127.0.0.1:32768/",
+		{"credentials in the user information", "cassandra://cassandra:cassandra@127.0.0.1:32768/",
 			func(f *dsnFields) {
 				f.Hosts = []string{"127.0.0.1:32768"}
 				f.Auth = &gocql.PasswordAuthenticator{Username: "cassandra", Password: "cassandra"}
 			}},
-		{"url with ipv6 and host keys", "cql://[::1]:9042/ks?host=[::2]:9042&host=h3",
+		{"url with ipv6 and host keys", "cassandra://[::1]:9042/ks?host=[::2]:9042&host=h3",
 			func(f *dsnFields) { f.Hosts, f.Keyspace = []string{"[::1]:9042", "[::2]:9042", "h3"}, "ks" }},
 	}
 	for _, test := range tests {
@@ -123,29 +122,58 @@ func TestParseDSN(t *testing.T) {
 
 func TestParseDSNErrors(t *testing.T) {
 	t.Parallel()
+	tests := []struct {
+		dsn  string
+		want error
+	}{
+		{"", dbimp.ErrScheme},
+		{"h1", dbimp.ErrScheme},
+		{"cql://h1", dbimp.ErrScheme},
+		{"http://h1", dbimp.ErrScheme},
+		{"CASSANDRA:h1", dbimp.ErrInvalidValue},
+		{"cassandra://h1?nope=1", dbimp.ErrUnknownKey},
+		{"cassandra://h1?blah", dbimp.ErrUnknownKey},
+		{"cassandra://h1?consistency=serial", dbimp.ErrInvalidValue},
+		{"cassandra://h1?keyspace=", dbimp.ErrInvalidValue},
+		{"cassandra://h1?timeout=soon", dbimp.ErrInvalidValue},
+		{"cassandra://h1?timeout=-1s", dbimp.ErrInvalidValue},
+		{"cassandra://h1?numConns=0", dbimp.ErrInvalidValue},
+		{"cassandra://h1?ignorePeerAddr=maybe", dbimp.ErrInvalidValue},
+		{"cassandra://h1?keyspace=a&keyspace=b", dbimp.ErrRepeatedKey},
+		{"cassandra://h1?a=%zz", dbimp.ErrInvalidValue},
+		// The host part holds one host (D34). net/url refuses a list that has
+		// a port on the first host and none on the last, or an IPv6 address.
+		{"cassandra://h1,h2", dbimp.ErrInvalidValue},
+		{"cassandra://h1?host=h2,h3", dbimp.ErrInvalidValue},
+		{"cassandra://h1,[::1]:9042", nil},
+		{"cassandra://h1:9042,h2", nil},
+		{"cassandra://u@h1?username=v", dbimp.ErrInvalidValue},
+		{"cassandra://h1/ks?keyspace=ks", dbimp.ErrInvalidValue},
+		{"cassandra://h1/ks/more", dbimp.ErrInvalidValue},
+		{"cassandra://h1#frag", dbimp.ErrInvalidValue},
+	}
+	for _, tt := range tests {
+		_, err := ParseDSN(tt.dsn)
+		// A want of nil is an error of net/url, which wraps no sentinel.
+		if err == nil || (tt.want != nil && !errors.Is(err, tt.want)) {
+			t.Errorf("%q: got %v, want %v", tt.dsn, err, tt.want)
+		}
+	}
+}
+
+// TestParseDSNErrorsHideThePassword holds that an error never holds the DSN,
+// because the DSN can hold a password.
+func TestParseDSNErrorsHideThePassword(t *testing.T) {
+	t.Parallel()
 	for _, dsn := range []string{
-		"h1?nope=1",
-		"h1?blah",
-		"h1?consistency=serial",
-		"h1?keyspace=",
-		"h1?timeout=soon",
-		"h1?timeout=-1s",
-		"h1?numConns=0",
-		"h1?ignorePeerAddr=maybe",
-		"h1?keyspace=a&keyspace=b",
-		"h1?a=%zz",
-		"cql://h1,[::1]:9042",
-		// net/url reads the text after the last colon of the host part as
-		// the port, so a list whose last host has no port is refused when an
-		// earlier host has one.
-		"cql://h1:9042,h2",
-		"cql://u@h1?username=v",
-		"cql://h1/ks?keyspace=ks",
-		"cql://h1/ks/more",
-		"cql://h1#frag",
+		"cassandra://u:secret@h1?nope=1",
+		"cassandra://u:secret@h1?timeout=soon",
+		"cassandra://u:secret@h1:%zz",
+		"http://u:secret@h1",
 	} {
-		if _, err := ParseDSN(dsn); !errors.Is(err, ErrInvalidDSN) {
-			t.Errorf("%q: got %v, want %v", dsn, err, ErrInvalidDSN)
+		_, err := ParseDSN(dsn)
+		if err == nil || strings.Contains(err.Error(), "secret") {
+			t.Errorf("%q: got %v", dsn, err)
 		}
 	}
 }
@@ -160,12 +188,12 @@ func TestFormatDSN(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := "cql://u:p%40ss@h1:9042,h2:9042/ks?consistency=localQuorum"; got != want {
+	if want := "cassandra://u:p%40ss@h1:9042/ks?consistency=localQuorum&host=h2%3A9042"; got != want {
 		t.Errorf("got  %s\nwant %s", got, want)
 	}
-	// A list that net/url refuses goes in host keys.
+	// The first host goes in the host part, and the others in host keys.
 	got, err = FormatDSN(gocql.NewCluster("h1:9042", "h2"))
-	if want := "cql://?host=h1%3A9042&host=h2"; err != nil || got != want {
+	if want := "cassandra://h1:9042?host=h2"; err != nil || got != want {
 		t.Errorf("got  %s %v\nwant %s", got, err, want)
 	}
 	for _, cfg := range []*gocql.ClusterConfig{
@@ -176,8 +204,8 @@ func TestFormatDSN(t *testing.T) {
 			return c
 		}(),
 	} {
-		if _, err := FormatDSN(cfg); !errors.Is(err, ErrInvalidDSN) {
-			t.Errorf("got %v, want %v", err, ErrInvalidDSN)
+		if _, err := FormatDSN(cfg); !errors.Is(err, dbimp.ErrInvalidValue) {
+			t.Errorf("got %v, want %v", err, dbimp.ErrInvalidValue)
 		}
 	}
 }
@@ -191,16 +219,16 @@ func (otherAuth) Success([]byte) error                                  { return
 func TestFormatDSNRoundTrip(t *testing.T) {
 	t.Parallel()
 	for _, dsn := range []string{
-		"h1",
-		"h1,h2?keyspace=ks&consistency=all&timeout=1s&numConns=4",
-		"h1?username=u&password=p",
-		"h1?password=p",
-		"h1?caPath=",
-		"[::1]:9042,h2?keyspace=ks",
-		"h1:9042,h2",
-		"h1,h2:9042",
-		"h1?keyspace=Mixed-Case",
-		"cql://u:p@h1:9042/ks?writeCoalesceWaitTime=0s&ignorePeerAddr=true",
+		"cassandra://h1",
+		"cassandra://h1?host=h2&keyspace=ks&consistency=all&timeout=1s&numConns=4",
+		"cassandra://h1?username=u&password=p",
+		"cassandra://h1?password=p",
+		"cassandra://h1?caPath=",
+		"cassandra://[::1]:9042?host=h2&keyspace=ks",
+		"cassandra://h1:9042?host=h2",
+		"cassandra://h1?host=h2:9042",
+		"cassandra://h1?keyspace=Mixed-Case",
+		"cassandra://u:p@h1:9042/ks?writeCoalesceWaitTime=0s&ignorePeerAddr=true",
 	} {
 		roundTrip(t, dsn)
 	}
@@ -229,10 +257,10 @@ func roundTrip(t *testing.T, dsn string) {
 
 func FuzzParseDSN(f *testing.F) {
 	for _, dsn := range []string{
-		"h1,h2?keyspace=ks&consistency=localQuorum",
-		"cql://u:p@h1:9042,h2/ks?timeout=1s",
-		"cql://[::1]:9042/ks?host=[::2]",
-		"h1?username=u&caPath=%2Fa",
+		"cassandra://h1?host=h2&keyspace=ks&consistency=localQuorum",
+		"cassandra://u:p@h1:9042/ks?timeout=1s&host=h2",
+		"cassandra://[::1]:9042/ks?host=[::2]",
+		"cassandra://h1?username=u&caPath=%2Fa",
 	} {
 		f.Add(dsn)
 	}

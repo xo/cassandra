@@ -1,9 +1,9 @@
-# Tests cql on every push and pull request, and every night.
+# Tests cassandra on every push and pull request, and every night.
 #
 # The unit and lint jobs need no server. The integration jobs start each
 # server with dbrun from dbmeta, at the pinned commit below, and run the tests
-# with CQL_DSN set to it (D20 in docs/PLAN.md). dbrun is the only thing that
-# starts a server.
+# with CASSANDRA_DSN set to it (D20 in docs/decisions). dbrun is the only thing
+# that starts a server.
 #
 # The release list lives in dbmeta, and this workflow does not repeat it
 # (D21). A push tests the releases that dbmeta calls tested. The nightly run
@@ -24,9 +24,13 @@ permissions:
   contents: read
 
 env:
-  # The dbmeta commit whose dbrun starts the servers. A new pin is a commit in
-  # this repository (D20).
-  DBMETA_COMMIT: 546f2be8705c03c25e3cbc128e3ddd8244df57e0
+  # The dbmeta commit whose dbrun starts the servers, and prints the url of each
+  # principal (dbmeta D102). It is the pin of dbimp, which is v0.4.0 of dbmeta. A
+  # new pin is a commit in this repository (D20).
+  DBMETA_COMMIT: 938892840f0c0f09a5a0292f03a42833bb8b3378
+  # The owner that dbrun records for each server that this workflow starts, so
+  # that it never stops one that another run started (dbmeta D98).
+  DBMETA_OWNER: cassandra-ci
   # dbrun uses podman by default, and a GitHub runner has docker.
   DBMETA_RUNNER: docker
 
@@ -43,6 +47,10 @@ jobs:
         run: test -z "$(gofmt -l .)"
       - name: Vet
         run: go vet ./...
+      - name: Build
+        run: go build ./...
+      # -count=2 finds a registration in a test body, which a second run
+      # refuses.
       - name: Test
         run: go test -race -count=2 ./...
 
@@ -113,11 +121,17 @@ jobs:
         run: go run ./cmd/dbrun start ${{ matrix.release }}
       - name: Test
         run: |
-          # The dsn field is the DSN that dbmeta gives this driver, in the D5
-          # form, with the credentials and the timeouts of the server.
-          export CQL_DSN=$(cd dbmeta/test && go run ./cmd/dbrun dsn --json ${{ matrix.release }} | jq -r '.[0].dsn')
+          # The url field is the DSN of the driver, with the credentials of the
+          # server. dbrun writes the scheme of the product for a ScyllaDB
+          # release, and the driver has the one name cassandra (D31), so the
+          # scheme is rewritten here, as dburl does.
+          export CASSANDRA_DSN=$(cd dbmeta/test && go run ./cmd/dbrun dsn --json ${{ matrix.release }} | jq -r '.[0].url' | sed 's#^scylla://#cassandra://#')
           go test -race -count=1 -run Integration -v ./...
       - name: Logs
         if: failure()
         working-directory: dbmeta/test
         run: go run ./cmd/dbrun logs ${{ matrix.release }}
+      - name: Remove ${{ matrix.release }}
+        if: always()
+        working-directory: dbmeta/test
+        run: go run ./cmd/dbrun remove ${{ matrix.release }}

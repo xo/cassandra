@@ -1,14 +1,18 @@
-package cql
+package cassandra
 
 import (
+	"context"
 	"database/sql"
 	"database/sql/driver"
 	"fmt"
 	"io"
+	"math/big"
+	"net/netip"
 	"reflect"
 	"uuid"
 
 	gocql "github.com/apache/cassandra-gocql-driver/v2"
+	"github.com/xo/dbimp"
 )
 
 // capture holds one value of the current row, as gocql read it. gocql calls
@@ -46,9 +50,11 @@ func (c *capture) bytes() []byte {
 // gocql can decode straight into a *[]string, a *map[string]int or a
 // *gocql.UUID.
 type rows struct {
-	it    iterator
-	cols  []gocql.ColumnInfo
-	names []string
+	it iterator
+	// cancel releases the timeout of the statement. It is never nil.
+	cancel context.CancelFunc
+	cols   []gocql.ColumnInfo
+	names  []string
 
 	// caps holds the captures of each column. A tuple column has one capture
 	// for each element, because gocql scans each element into its own
@@ -57,15 +63,18 @@ type rows struct {
 	// dest holds a pointer to every capture, in the order that gocql scans
 	// them.
 	dest []any
+	// read counts the rows that NextRow returned.
+	read int
 }
 
 func newRows(it iterator) *rows {
 	cols := it.columns()
 	r := &rows{
-		it:    it,
-		cols:  cols,
-		names: make([]string, len(cols)),
-		caps:  make([][]capture, len(cols)),
+		it:     it,
+		cancel: func() {},
+		cols:   cols,
+		names:  make([]string, len(cols)),
+		caps:   make([][]capture, len(cols)),
 	}
 	for i, col := range cols {
 		r.names[i] = col.Name
@@ -94,6 +103,7 @@ func (r *rows) Close() error {
 	}
 	err := r.it.close()
 	r.it = nil
+	r.cancel()
 	if err != nil {
 		return fmt.Errorf("closing rows: %w", err)
 	}
@@ -108,11 +118,18 @@ func (r *rows) NextRow() error {
 		return io.EOF
 	}
 	if r.it.scan(r.dest...) {
+		r.read++
 		return nil
 	}
 	err := r.it.close()
 	r.it = nil
-	if err != nil {
+	r.cancel()
+	switch {
+	case err != nil && r.read > 0:
+		// At least one row reached the caller, so the result is incomplete
+		// (dbimp D21).
+		return fmt.Errorf("reading rows after %d rows: %w: %w", r.read, dbimp.ErrIncomplete, err)
+	case err != nil:
 		return fmt.Errorf("reading rows: %w", err)
 	}
 	return io.EOF
@@ -137,8 +154,9 @@ func (r *rows) Next(dest []driver.Value) error {
 
 // ScanColumn decodes column index of the current row into dest.
 //
-// A sql.Scanner, *any, *sql.RawBytes, a *uuid.UUID, a **uuid.UUID and a tuple
-// column take the canonical value, which sql.ConvertAssign converts. gocql
+// A sql.Scanner, *any, *sql.RawBytes, a *uuid.UUID, a **uuid.UUID, a pointer
+// to a type of dbimp or a netip.Addr, and a tuple column take the canonical
+// value, which dbimp.Assign converts. gocql
 // cannot decode into the standard uuid.UUID, and the canonical value of a
 // uuid column is one (D25). Any other destination goes to
 // gocql. When gocql refuses a pointer to a basic kind, such as a *float64 for
@@ -152,7 +170,8 @@ func (r *rows) ScanColumn(sc driver.ScanContext, index int, dest any) error {
 	}
 	c := &r.caps[index][0]
 	switch dest.(type) {
-	case nil, sql.Scanner, *any, *sql.RawBytes, *uuid.UUID, **uuid.UUID:
+	case nil, sql.Scanner, *any, *sql.RawBytes, *uuid.UUID, **uuid.UUID,
+		*dbimp.Date, *dbimp.LocalTime, *dbimp.Interval, *netip.Addr:
 		return r.convert(sc, index, dest)
 	case gocql.Unmarshaler:
 		// A type of the caller that decodes itself also decides what NULL is.
@@ -174,7 +193,7 @@ func (r *rows) ScanColumn(sc driver.ScanContext, index int, dest any) error {
 	err := gocql.Unmarshal(c.info, c.data, dest)
 	if err != nil && isBasic(kind) {
 		if v, cerr := canonical(c.info, false, c.data); cerr == nil {
-			if sql.ConvertAssign(sc, dest, v) == nil {
+			if assign(sc, dest, v) == nil {
 				return nil
 			}
 		}
@@ -207,7 +226,36 @@ func (r *rows) convert(sc driver.ScanContext, index int, dest any) error {
 	if err != nil {
 		return err
 	}
-	return sql.ConvertAssign(sc, dest, v)
+	return assign(sc, dest, v)
+}
+
+// assign stores the canonical value src in dest. A *big.Int and a netip.Addr
+// go to a destination of their own type, or to a *any, and to any other
+// destination as their text. dbimp.Assign stores every other value.
+func assign(sc driver.ScanContext, dest, src any) error {
+	switch s := src.(type) {
+	case *big.Int:
+		switch d := dest.(type) {
+		case *big.Int:
+			d.Set(s)
+			return nil
+		case *any:
+			*d = s
+			return nil
+		}
+		src = s.String()
+	case netip.Addr:
+		switch d := dest.(type) {
+		case *netip.Addr:
+			*d = s
+			return nil
+		case *any:
+			*d = s
+			return nil
+		}
+		src = s.String()
+	}
+	return dbimp.Assign(sc, dest, src)
 }
 
 // value returns the canonical value of column index. A tuple is an []any of

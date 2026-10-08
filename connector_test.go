@@ -1,13 +1,16 @@
-package cql
+package cassandra
 
 import (
 	"context"
+	"database/sql"
 	"database/sql/driver"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 
 	gocql "github.com/apache/cassandra-gocql-driver/v2"
+	"github.com/xo/dbimp"
 )
 
 func TestConnectorSharesOneSession(t *testing.T) {
@@ -137,17 +140,32 @@ func TestOwnedConnectionClosesItsSession(t *testing.T) {
 
 func TestDriverRefusesABadDSN(t *testing.T) {
 	t.Parallel()
-	if _, err := (Driver{}).Open("?nope=1"); !errors.Is(err, ErrInvalidDSN) {
-		t.Errorf("Open: got %v, want %v", err, ErrInvalidDSN)
+	if _, err := (Driver{}).Open("cassandra://?nope=1"); !errors.Is(err, dbimp.ErrUnknownKey) {
+		t.Errorf("Open: got %v, want %v", err, dbimp.ErrUnknownKey)
 	}
-	if _, err := (Driver{}).OpenConnector("?nope=1"); !errors.Is(err, ErrInvalidDSN) {
-		t.Errorf("OpenConnector: got %v, want %v", err, ErrInvalidDSN)
+	if _, err := (Driver{}).OpenConnector("cassandra://?nope=1"); !errors.Is(err, dbimp.ErrUnknownKey) {
+		t.Errorf("OpenConnector: got %v, want %v", err, dbimp.ErrUnknownKey)
 	}
-	c, err := (Driver{}).OpenConnector("cql://h1/ks")
+	c, err := (Driver{}).OpenConnector("cassandra://h1/ks")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, ok := c.Driver().(Driver); !ok {
 		t.Errorf("got driver %T, want Driver", c.Driver())
+	}
+}
+
+// TestTheDriverRegistersOneName holds hard rule 1: the driver registers the
+// name cassandra, and no alias.
+func TestTheDriverRegistersOneName(t *testing.T) {
+	t.Parallel()
+	var found []string
+	for _, name := range sql.Drivers() {
+		if strings.Contains(name, "cassandra") || strings.Contains(name, "cql") {
+			found = append(found, name)
+		}
+	}
+	if len(found) != 1 || found[0] != Name {
+		t.Errorf("got the drivers %v, want only %q", found, Name)
 	}
 }

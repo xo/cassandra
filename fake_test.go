@@ -1,10 +1,11 @@
-package cql
+package cassandra
 
 import (
 	"context"
 	"database/sql"
 	"sync"
 	"testing"
+	"time"
 
 	gocql "github.com/apache/cassandra-gocql-driver/v2"
 )
@@ -14,6 +15,8 @@ type call struct {
 	stmt   string
 	values []any
 	opts   options
+	// deadline is the deadline of the context of the statement, if it has one.
+	deadline time.Time
 }
 
 // result is what a fake session returns for a query.
@@ -40,19 +43,20 @@ type fakeSession struct {
 	closed int
 }
 
-func (s *fakeSession) record(stmt string, values []any, o options) {
+func (s *fakeSession) record(ctx context.Context, stmt string, values []any, o options) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.calls = append(s.calls, call{stmt: stmt, values: values, opts: o})
+	d, _ := ctx.Deadline()
+	s.calls = append(s.calls, call{stmt: stmt, values: values, opts: o, deadline: d})
 }
 
-func (s *fakeSession) exec(_ context.Context, stmt string, values []any, o options) error {
-	s.record(stmt, values, o)
+func (s *fakeSession) exec(ctx context.Context, stmt string, values []any, o options) error {
+	s.record(ctx, stmt, values, o)
 	return s.err
 }
 
-func (s *fakeSession) query(_ context.Context, stmt string, values []any, o options) (iterator, error) {
-	s.record(stmt, values, o)
+func (s *fakeSession) query(ctx context.Context, stmt string, values []any, o options) (iterator, error) {
+	s.record(ctx, stmt, values, o)
 	if s.err != nil {
 		return nil, s.err
 	}

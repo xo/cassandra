@@ -1,8 +1,11 @@
-package cql
+package cassandra
 
 import (
 	"context"
 	"database/sql/driver"
+	"fmt"
+
+	"github.com/xo/dbimp"
 )
 
 // stmt is a statement that a connection prepared. It holds only the text,
@@ -23,14 +26,16 @@ func (s *stmt) NumInput() int {
 	return -1
 }
 
-// Exec returns ErrNoContext. database/sql calls ExecContext instead.
+// Exec returns an error that wraps dbimp.ErrNotSupported. database/sql calls
+// ExecContext instead.
 func (s *stmt) Exec([]driver.Value) (driver.Result, error) {
-	return nil, ErrNoContext
+	return nil, fmt.Errorf("running a statement without a context: %w", dbimp.ErrNotSupported)
 }
 
-// Query returns ErrNoContext. database/sql calls QueryContext instead.
+// Query returns an error that wraps dbimp.ErrNotSupported. database/sql calls
+// QueryContext instead.
 func (s *stmt) Query([]driver.Value) (driver.Rows, error) {
-	return nil, ErrNoContext
+	return nil, fmt.Errorf("running a query without a context: %w", dbimp.ErrNotSupported)
 }
 
 // ExecContext runs the statement. See conn.ExecContext.

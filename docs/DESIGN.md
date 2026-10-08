@@ -1,7 +1,11 @@
 # Driver design
 
-This document is the target design for the rewritten `cql` driver. Ken
-accepted it on 2026-09-27, as D17 in [PLAN.md](PLAN.md) records. D18 to D24
+D30 to D33 amended this design on 2026-10-08: the DSN, the types, the options and
+the errors follow `dbimp`. Where this document and those decisions differ, the
+decisions win, and the sections below carry the change.
+
+This document is the target design for the rewritten `cassandra` driver. Ken
+accepted it on 2026-09-27, as D17 in [decisions/](decisions/README.md) records. D18 to D24
 settle the questions that it left open. The work that builds it is W16 in
 [BACKLOG.md](BACKLOG.md).
 
@@ -31,7 +35,7 @@ that still needs a test says so.
    and user defined types.
 5. Hold no package level configuration (D8). Log nothing.
 6. Run every unit test with no server. Gate the integration tests on
-   `CQL_DSN` (D11).
+   `CASSANDRA_DSN` (D11).
 7. Keep each file small, with one job, so that a developer or a coding agent
    can find a behavior by its file name.
 
@@ -49,7 +53,7 @@ The table lists every interface in `database/sql/driver` for Go 1.27.1.
 | `ConnPrepareContext` | `conn` | Returns a `stmt` that holds the statement text. |
 | `ExecerContext` | `conn` | Runs a statement with no prepare step. |
 | `QueryerContext` | `conn` | Runs a query with no prepare step. |
-| `ConnBeginTx` | `conn` | Returns `ErrNoTransactions`. |
+| `ConnBeginTx` | `conn` | Returns an error that wraps `dbimp.ErrNotSupported`. |
 | `Pinger` | `conn` | Reads `release_version` from `system.local`. |
 | `SessionResetter` | `conn` | Returns `driver.ErrBadConn` after the connector closes, and nil before. |
 | `Validator` | `conn` | Returns false after the connector closes. |
@@ -128,7 +132,7 @@ gocql `CreateSession` takes no context. The `connectTimeout` key in the DSN
 limits how long it runs. `Connect` does not store its context (D7).
 
 A caller that needs a gocql feature that the DSN cannot express builds a
-`ClusterConfig`, sets it, and calls `sql.OpenDB(cql.NewConnector(cfg))`.
+`ClusterConfig`, sets it, and calls `sql.OpenDB(cassandra.NewConnector(cfg))`.
 Examples are a host selection policy, a retry policy, a `Logger`, a
 `QueryObserver` or a `ConnectObserver`. That is also the only way to log: the
 driver itself logs nothing (D8).
@@ -154,7 +158,7 @@ closed, `ResetSession` returns `driver.ErrBadConn`, which is what the
 interface asks for, and `IsValid` returns false. Otherwise they return nil
 and true.
 
-`Begin` and `BeginTx` return `ErrNoTransactions`.
+`Begin` and `BeginTx` return an error that wraps `dbimp.ErrNotSupported`.
 
 ## Statements
 
@@ -179,16 +183,17 @@ When a driver implements `NamedValueChecker`, `database/sql` does not call
 
 | The argument is | CheckNamedValue returns | Why |
 | --- | --- | --- |
-| named, from `sql.Named` | `ErrNamedArgs` | gocql `v2` has no named binding. |
-| a query option, such as `PageSize` | nil | `ExecContext` and `QueryContext` take it out. See Query options. |
+| named, from `sql.Named` | an error that wraps `dbimp.ErrNotSupported` | gocql `v2` has no named binding. |
+| a query option, such as `WithPageSize` | nil | `ExecContext` and `QueryContext` take it out. See Query options. |
 | nil | nil | gocql binds NULL. |
 | a `gocql.Marshaler` | nil | gocql marshals it. This comes before `driver.Valuer`, so that a type with both uses the native form. |
 | a `driver.Valuer`, such as `sql.Null[T]` | `driver.ErrSkip` | `database/sql` calls `Value` and converts the result. |
-| a channel, a function, a complex number or an unsafe pointer | `ErrUnsupportedArg`, wrapped with the type | gocql can never bind these. |
+| a type of `dbimp`, an `*apd.Decimal` or a `netip.Addr` | nil, after it becomes the value that gocql takes | The canonical types of a column bind too (D32). |
+| a channel, a function, a complex number or an unsafe pointer | an error that wraps `dbimp.ErrNotSupported` | gocql can never bind these. |
 | anything else | nil | gocql marshals it when the statement runs. |
 
 The last row accepts slices, maps, arrays, structs for user defined types,
-`gocql.UUID`, `gocql.Duration`, `*big.Int`, `*inf.Dec`, `net.IP`,
+`gocql.UUID`, `gocql.Duration`, `*big.Int`, `net.IP`,
 `time.Time`, `time.Duration` and `gocql.UnsetValue`. A value that does not fit
 the column fails when the statement runs. The error from gocql names the
 column type and the Go type, and the driver returns it wrapped. The driver
@@ -200,57 +205,41 @@ The current driver runs every argument through
 
 ## Query options
 
-A query option changes how gocql runs one statement. The option types are in
-`options.go`, and each one satisfies one unexported interface:
+A query option changes how gocql runs one statement. The options are in
+`options.go`, and `Option` is `dbimp.Option[options]` (D33 and dbimp D109):
 
-| Type | gocql call |
+| Function | Effect |
 | --- | --- |
-| `Consistency` | `Query.Consistency` |
-| `SerialConsistency` | `Query.SerialConsistency` |
-| `PageSize` | `Query.PageSize` |
-| `Idempotent` | `Query.Idempotent` |
-| `Timestamp`, a `time.Time` | `Query.WithTimestamp`, in microseconds |
-
-```go
-// Option changes how one statement runs. Pass it as an argument, or attach it
-// to a context with WithOptions.
-type Option interface {
-	apply(*options)
-}
-
-// WithOptions returns a copy of ctx that carries opts. Every statement that
-// runs with the returned context uses them.
-func WithOptions(ctx context.Context, opts ...Option) context.Context
-```
+| `WithConsistency` | `Query.Consistency` |
+| `WithSerialConsistency` | `Query.SerialConsistency` |
+| `WithPageSize` | `Query.PageSize` |
+| `WithIdempotent` | `Query.Idempotent` |
+| `WithTimestamp` | `Query.WithTimestamp`, in microseconds |
+| `WithTimeout` | a deadline on the context of the statement, over every page of its rows |
+| `WithDatabase` | `Query.SetKeyspace`, which needs protocol version 5 |
+| `WithReadonly` | `WithReadonly(true)` fails with `dbimp.ErrNotSupported` |
+| `WithParameter` | fails with `dbimp.ErrNotSupported`, because the protocol has no body of keys |
 
 A caller can pass an option in two ways (D23). The first is an argument:
 
 ```go
 rows, err := db.QueryContext(ctx, "SELECT id FROM users WHERE org = ?",
-	org, cql.Consistency(gocql.LocalQuorum), cql.PageSize(500))
+	org, cassandra.WithConsistency(gocql.LocalQuorum), cassandra.WithPageSize(500))
 ```
 
 The second is a context, which carries the option to every call that uses it:
 
 ```go
-ctx = cql.WithOptions(ctx, cql.Consistency(gocql.LocalQuorum))
+ctx = cassandra.WithOptions(ctx, cassandra.WithConsistency(gocql.LocalQuorum))
 ```
 
 The DSN sets the defaults for the whole session, such as `consistency`, and
 gocql applies them to every query it creates. For each statement, the driver
-then applies the options from the context, and then the options from the
-arguments. So the order is the DSN, then the context, then the argument, and
-each one overrides the one before it. `n1ql` D20 uses the same order. `WithOptions` on a context that already carries options adds to
-them, and a later option of the same type wins. The context key is an
-unexported type, so no other package can read or replace it.
-
-`ExecContext` and `QueryContext` split the arguments into options and values
-with one type switch. An option can be anywhere in the list. The values keep
-their order. The `conn` stores nothing between calls.
-
-The `pgx` stdlib adapter takes a `QueryExecMode` as an argument in the same
-way. `clickhouse-go` puts its settings in the context. The driver supports
-both, as Ken decided.
+calls `dbimp.Resolve`, which applies the options from the context and then the
+options from the arguments. So the order is the DSN, then the context, then the
+argument, and each one overrides the one before it. An option can be anywhere in
+the list of arguments, and `Resolve` numbers the values again. The `conn` stores
+nothing between calls.
 
 ## Rows
 
@@ -336,7 +325,7 @@ depends on the old behavior.
 
 The canonical value is what `*any` receives, what a `sql.Scanner` receives,
 what `Next` returns, and what `ColumnTypeScanType` reports. One CQL type has
-one canonical Go type in all four places.
+one canonical Go type in all four places, by the kinds of `dbimp` (D32).
 
 | CQL type | Canonical Go type |
 | --- | --- |
@@ -345,34 +334,34 @@ one canonical Go type in all four places.
 | `boolean` | `bool` |
 | `tinyint`, `smallint`, `int`, `bigint`, `counter` | `int64` |
 | `float`, `double` | `float64` |
-| `varint` | `string`, in base 10 |
-| `decimal` | `string` |
+| `varint` | `*big.Int` |
+| `decimal` | `*apd.Decimal` |
 | `timestamp` | `time.Time`, in UTC |
-| `date` | `time.Time`, at midnight UTC |
-| `time` | `time.Duration` since midnight |
-| `duration` | `gocql.Duration` |
+| `date` | `dbimp.Date` |
+| `time` | `dbimp.LocalTime` |
+| `duration` | `dbimp.Interval` |
 | `uuid`, `timeuuid` | `uuid.UUID`, from the standard library (D25) |
-| `inet` | `string` |
-| `list<T>`, `set<T>` | a slice of the element type that gocql chooses |
-| `map<K, V>` | a map of the key and value types that gocql chooses |
-| `tuple<...>` | `[]any` |
-| a user defined type | `map[string]any` |
+| `inet` | `netip.Addr` |
+| `list<T>`, `set<T>`, `tuple<...>` | `[]any`, of the canonical values of the elements |
+| `map<text, V>`, a user defined type | `map[string]any` |
+| `map<K, V>` with another key | the map that gocql chooses |
+| `vector<T, N>` of numbers | `dbimp.Vector[T]` |
 
-The basic types follow the `driver.Value` set, so that every `sql.Scanner` in
-the standard library accepts them. `inet`, `varint` and `decimal` become
-strings for the same reason. `uuid` and `timeuuid` become the standard
-`uuid.UUID` of Go 1.27, as D25 decided, and `CheckNamedValue` converts a
-`uuid.UUID` argument to a `gocql.UUID`, because gocql knows only its own
-type. The `pgx` stdlib adapter returns strings
-for its UUID and numeric types. A caller that wants `gocql.UUID` or
-`*inf.Dec` scans into that type, and gocql decodes it.
+`canonical` asks gocql to decode the value into the Go type that gocql chooses,
+and `normalize` turns it into the canonical value, element by element for a
+collection. A `gocql.Unmarshaler` that is not a `uuid.UUID` still decodes into
+the type that gocql chooses.
 
-`duration` stays `gocql.Duration`. It has months and days, so no
-`time.Duration` or string form is exact. D22 removes the two helpers that
-converted it with a guess.
+`CheckNamedValue` converts each canonical type that gocql does not take as an
+argument: a `uuid.UUID` to a `gocql.UUID`, a `dbimp.Date`, an `*apd.Decimal`
+and the other types of `dbimp` to a value that writes its own wire form. gocql
+writes a `time.Time` that is the zero value as an empty value, so a date is
+never a `time.Time` on the way in.
 
-Unit tests must pin every row of this table. The collection rows depend on
-`TypeInfo.Zero`, and a test must confirm the types.
+A caller that wants `gocql.UUID` or a type of gocql scans into that type, and
+gocql decodes it.
+
+Unit tests pin every row of this table.
 
 ## Column types
 
@@ -404,7 +393,7 @@ example.
 
 ## Transactions and batches
 
-`BeginTx` returns `ErrNoTransactions`. The driver does not emulate a
+`BeginTx` returns an error that wraps `dbimp.ErrNotSupported`. The driver does not emulate a
 transaction with a `BATCH`. A logged batch is atomic, but it is not isolated,
 it cannot roll back, and a query inside it cannot read its own writes. Both
 models agreed.
@@ -422,33 +411,24 @@ The package documentation must show this example.
 
 ## Errors
 
-`errors.go` holds the error type and the sentinel errors (D7):
+`errors.go` holds the error type and the one sentinel error of the driver
+(D7). The other errors are those of `dbimp` (D33):
 
 ```go
 // Error is an error that the driver reports.
 type Error string
 
-// Error satisfies the error interface.
-func (err Error) Error() string { return string(err) }
-
 // Error values.
 const (
-	// ErrNoTransactions is returned by BeginTx. CQL has no transactions.
-	ErrNoTransactions Error = "transactions are not supported"
-	// ErrNamedArgs is returned for an argument from sql.Named.
-	ErrNamedArgs Error = "named arguments are not supported"
-	// ErrUnsupportedArg is returned for an argument that gocql cannot bind.
-	ErrUnsupportedArg Error = "argument type is not supported"
 	// ErrConnectorClosed is returned by Connect after Close.
 	ErrConnectorClosed Error = "connector is closed"
-	// ErrInvalidDSN is returned by ParseDSN, wrapped with the key or the
-	// part of the URL that is not valid.
-	ErrInvalidDSN Error = "invalid dsn"
-	// ErrNoContext is returned by stmt.Exec and stmt.Query, which take no
-	// context.
-	ErrNoContext Error = "a call with no context is not supported"
 )
 ```
+
+A DSN wraps `dbimp.ErrScheme`, `dbimp.ErrUnknownKey`, `dbimp.ErrRepeatedKey` or
+`dbimp.ErrInvalidValue`. `BeginTx`, a named argument, an argument that gocql
+cannot bind, and a call that takes no context wrap `dbimp.ErrNotSupported`. A
+result that fails after a row reached the caller wraps `dbimp.ErrIncomplete`.
 
 The driver returns every gocql error wrapped with `%w`. So
 `errors.As` finds a `gocql.RequestError` and its concrete types, such as
@@ -482,44 +462,38 @@ holds a context. The driver never calls `context.Background` or
 
 ## DSN
 
-A DSN has two forms (D5, D24). A DSN that starts with `cassandra://` or
-`cql://` is a URL, and the driver parses it with `net/url`. Any other DSN is
-the D5 form, which stays accepted so that an old DSN keeps working. The
-driver looks at the prefix, because `url.Parse` reads the D5 form
-`h1:9042,h2?keyspace=ks` as a URL with the scheme `h1`.
+A DSN is a URL whose scheme is `cassandra`, parsed with `net/url`. The driver
+reads no other scheme and no older form (D31, and dbimp D27 and dbimp D35).
+`dburl` writes the URL, and rewrites its alias schemes, such as `scylla://`, to
+`cassandra://` first, so this driver never repeats the alias list.
 
 ```text
-cql://user:password@h1:9042,h2/keyspace?consistency=localQuorum
-cql://[::1]:9042/keyspace?host=[::2]:9042&host=h3
-h1:9042,h2?keyspace=keyspace&username=user&password=password
+cassandra://user:password@h1:9042/keyspace?consistency=localQuorum&host=h2
+cassandra://[::1]:9042/keyspace?host=[::2]:9042&host=h3
 ```
 
 | Part of the URL | Configuration |
 | --- | --- |
 | user information | `username` and `password` |
-| host | the hosts, separated by commas, each with an optional port |
+| host | one host, with an optional port |
 | path | the keyspace, as one segment |
-| query | the D5 keys, and a `host` key that can repeat |
+| query | the keys of the README, and a `host` key that can repeat |
 
-The driver splits the host part at each comma itself, because `Hostname` and
-`Port` in `net/url` do not split a list. `net/url` refuses a list that holds
-an IPv6 address in brackets, so each `host` key in the query adds one host.
-A setting that appears in two places is an error, such as a user name in the
-user information and in a `username` key.
+The host part holds one host, and each `host` key in the query adds one more, in
+order (D34). A comma in the host part is an error. Any host can be an IPv6 address
+in brackets. A setting that appears in two places is an error, such as a user name
+in the user information and in a `username` key.
 
-After the rewrite, `dburl` sends the URL itself as the DSN. It rewrites its
-alias schemes, such as `scylla://`, to `cql://` first, so this driver never
-repeats the alias list (D24).
-
-`dsn.go` holds two functions, in the style of `go-sql-driver/mysql`:
+`dsn.go` reads the query with `dbimp.NewQuery`, which refuses a key that it does
+not know and a key that repeats, and with the helpers of `dbimp.Query`, each with
+the default of `gocql.NewCluster`. It holds two functions:
 
 ```go
-// ParseDSN parses a DSN in either form: a URL that starts with cassandra://
-// or cql://, or host[:port][,host[:port]...]?key=value&...
+// ParseDSN parses a DSN, which is a URL that starts with cassandra://.
 func ParseDSN(dsn string) (*gocql.ClusterConfig, error)
 
-// FormatDSN writes cfg as a cql:// URL. It returns an error for a value that
-// has no DSN form, such as an unknown consistency.
+// FormatDSN writes cfg as a cassandra:// URL. It returns an error for a value
+// that has no DSN form, such as an unknown consistency.
 func FormatDSN(cfg *gocql.ClusterConfig) (string, error)
 ```
 
@@ -575,7 +549,7 @@ them directly.
 | `connector_test.go` | One session for many `Connect` calls, a new try after a failure, and `Connect` after `Close`. | no |
 | `skills_test.go` | D15. | no |
 | `example_test.go` | `Example` functions for `sql.Open`, `NewConnector`, query options, a lightweight transaction and a batch. | no output checked |
-| `integration_test.go` | Every CQL type in and out, every NULL rule, collections, paging, cancellation, and the errors in W6. | `CQL_DSN` |
+| `integration_test.go` | Every CQL type in and out, every NULL rule, collections, paging, cancellation, and the errors in W6. | `CASSANDRA_DSN` |
 
 The unit tests use table driven subtests, `t.Parallel`, and `t.Context()` in
 place of `context.Background`. `BenchmarkScan` uses `b.Loop` and measures the

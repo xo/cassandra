@@ -1,4 +1,4 @@
-package cql_test
+package cassandra_test
 
 import (
 	"context"
@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math/big"
 	"net"
+	"net/netip"
 	"os"
 	"reflect"
 	"strings"
@@ -15,23 +16,24 @@ import (
 	"uuid"
 
 	gocql "github.com/apache/cassandra-gocql-driver/v2"
-	"github.com/xo/cql"
-	"gopkg.in/inf.v0"
+	"github.com/cockroachdb/apd/v3"
+	"github.com/xo/cassandra"
+	"github.com/xo/dbimp"
 )
 
-// openTestDB opens the server that CQL_DSN names, and creates a keyspace for
+// openTestDB opens the server that CASSANDRA_DSN names, and creates a keyspace for
 // the test. The test drops the keyspace when it ends. The test is skipped
-// when CQL_DSN is empty. Start a server with dbrun from dbmeta:
+// when CASSANDRA_DSN is empty. Start a server with dbrun from dbmeta:
 //
 //	cd ../dbmeta/test && go run ./cmd/dbrun start cassandra-5.0
-//	export CQL_DSN=$(go run ./cmd/dbrun dsn cassandra-5.0)
+//	export CASSANDRA_DSN=$(go run ./cmd/dbrun dsn cassandra-5.0)
 func openTestDB(t *testing.T) (*sql.DB, string) {
 	t.Helper()
-	dsn := os.Getenv("CQL_DSN")
+	dsn := os.Getenv("CASSANDRA_DSN")
 	if dsn == "" {
-		t.Skip("CQL_DSN is empty")
+		t.Skip("CASSANDRA_DSN is empty")
 	}
-	db, err := sql.Open("cql", dsn)
+	db, err := sql.Open("cassandra", dsn)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -46,7 +48,7 @@ func openTestDB(t *testing.T) (*sql.DB, string) {
 	if err := db.QueryRowContext(t.Context(), "SELECT data_center FROM system.local").Scan(&dc); err != nil {
 		t.Fatalf("reading the data center: %v", err)
 	}
-	keyspace := fmt.Sprintf("cqltest_%d", time.Now().UnixNano())
+	keyspace := fmt.Sprintf("cassandratest_%d", time.Now().UnixNano())
 	exec(t, db, "CREATE KEYSPACE "+keyspace+" WITH replication = {'class': 'NetworkTopologyStrategy', '"+dc+"': 1}")
 	t.Cleanup(func() {
 		// The test context is done by now.
@@ -82,17 +84,21 @@ func TestIntegrationTypes(t *testing.T) {
 	exec(t, db, "INSERT INTO "+ks+`.everything (id, a, t, b, bo, ti, si, i, bi, f, d, vi, de, ts, da, tm, du, tu, ip, l, s, m, tp, ad)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, (7, 'seven'), ?)`,
 		id, "a", "é", []byte{1, 2}, true, int8(-3), int16(300), 42, int64(1)<<40, float32(1.5), 2.25,
-		vi, inf.NewDec(150, 2), ts, date, 90*time.Second, gocql.Duration{Months: 1, Days: 2, Nanoseconds: 3},
+		vi, apd.New(150, -2), ts, date, 90*time.Second, gocql.Duration{Months: 1, Days: 2, Nanoseconds: 3},
 		tu, net.ParseIP("10.0.0.1"), []int{1, 2}, []string{"x", "y"}, map[string]int{"k": 1},
 		map[string]any{"street": "main", "number": 4})
+	// Each value has the Go type of its CQL type (dbimp D135).
 	want := map[string]any{
 		"id": uuid.UUID(id), "a": "a", "t": "é", "b": []byte{1, 2}, "bo": true,
 		"ti": int64(-3), "si": int64(300), "i": int64(42), "bi": int64(1) << 40,
-		"f": float64(1.5), "d": 2.25, "vi": vi.String(), "de": "1.50", "ts": ts,
-		"da": date, "tm": 90 * time.Second, "du": gocql.Duration{Months: 1, Days: 2, Nanoseconds: 3},
-		"tu": uuid.UUID(tu), "ip": "10.0.0.1", "l": []int{1, 2}, "s": []string{"x", "y"},
-		"m": map[string]int{"k": 1}, "tp": []any{int64(7), "seven"},
-		"ad": map[string]any{"street": "main", "number": 4},
+		"f": float64(1.5), "d": 2.25, "vi": vi, "de": apd.New(150, -2), "ts": ts,
+		"da": dbimp.Date{Year: 2026, Month: time.September, Day: 27},
+		"tm": dbimp.LocalTime{Minute: 1, Second: 30},
+		"du": dbimp.Interval{Months: 1, Days: 2, Nanoseconds: 3},
+		"tu": uuid.UUID(tu), "ip": netip.MustParseAddr("10.0.0.1"),
+		"l": []any{int64(1), int64(2)}, "s": []any{"x", "y"},
+		"m": map[string]any{"k": int64(1)}, "tp": []any{int64(7), "seven"},
+		"ad": map[string]any{"street": "main", "number": int64(4)},
 	}
 	rows, err := db.QueryContext(t.Context(), "SELECT * FROM "+ks+".everything WHERE id = ?", id)
 	if err != nil {
@@ -119,7 +125,7 @@ func TestIntegrationTypes(t *testing.T) {
 		t.Fatal(err)
 	}
 	for i, name := range names {
-		if !reflect.DeepEqual(values[i], want[name]) {
+		if !sameValue(values[i], want[name]) {
 			t.Errorf("%s: got %#v (%T), want %#v", name, values[i], values[i], want[name])
 		}
 		if st := types[i].ScanType(); reflect.TypeOf(values[i]) != st {
@@ -147,6 +153,20 @@ func TestIntegrationTypes(t *testing.T) {
 	if std != uuid.UUID(id) || !null.Valid || null.V != uuid.UUID(tu) {
 		t.Errorf("got %v and %v", std, null)
 	}
+}
+
+// sameValue compares two values of a row. A *big.Int and an *apd.Decimal hold
+// their number in a form that reflect.DeepEqual cannot compare.
+func sameValue(got, want any) bool {
+	switch w := want.(type) {
+	case *big.Int:
+		g, ok := got.(*big.Int)
+		return ok && g.Cmp(w) == 0
+	case *apd.Decimal:
+		g, ok := got.(*apd.Decimal)
+		return ok && g.Cmp(w) == 0
+	}
+	return reflect.DeepEqual(got, want)
 }
 
 func TestIntegrationNull(t *testing.T) {
@@ -193,22 +213,22 @@ func TestIntegrationErrors(t *testing.T) {
 	if _, err := db.QueryContext(t.Context(), "SELECT * FROM "+ks+".nope"); !errors.As(err, &invalid) {
 		t.Errorf("missing table: got %v (%T)", err, err)
 	}
-	cfg, err := cql.ParseDSN(os.Getenv("CQL_DSN"))
+	cfg, err := cassandra.ParseDSN(os.Getenv("CASSANDRA_DSN"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	cfg.Keyspace = "no_such_keyspace"
-	if err := sql.OpenDB(cql.NewConnector(cfg)).PingContext(t.Context()); err == nil {
+	if err := sql.OpenDB(cassandra.NewConnector(cfg)).PingContext(t.Context()); err == nil {
 		t.Error("a missing keyspace gave no error")
 	}
 	auth, ok := cfg.Authenticator.(gocql.PasswordAuthenticator)
 	if !ok {
-		t.Skip("CQL_DSN has no credentials, so the wrong password case cannot run")
+		t.Skip("CASSANDRA_DSN has no credentials, so the wrong password case cannot run")
 	}
 	cfg.Keyspace = ""
 	auth.Password += "-wrong"
 	cfg.Authenticator = auth
-	err = sql.OpenDB(cql.NewConnector(cfg)).PingContext(t.Context())
+	err = sql.OpenDB(cassandra.NewConnector(cfg)).PingContext(t.Context())
 	if err == nil || !strings.Contains(strings.ToLower(err.Error()), "password") {
 		t.Errorf("wrong password: got %v, want an error that names the password", err)
 	}
@@ -220,8 +240,8 @@ func TestIntegrationPaging(t *testing.T) {
 	for i := range 25 {
 		exec(t, db, "INSERT INTO "+ks+".p (k, c) VALUES (1, ?)", i)
 	}
-	ctx := cql.WithOptions(t.Context(), cql.Consistency(gocql.One))
-	rows, err := db.QueryContext(ctx, "SELECT c FROM "+ks+".p WHERE k = 1", cql.PageSize(10))
+	ctx := cassandra.WithOptions(t.Context(), cassandra.WithConsistency(gocql.One))
+	rows, err := db.QueryContext(ctx, "SELECT c FROM "+ks+".p WHERE k = 1", cassandra.WithPageSize(10))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -290,7 +310,7 @@ func TestIntegrationBatchAndLightweightTransaction(t *testing.T) {
 			t.Errorf("got applied %v, want %v", applied, want)
 		}
 	}
-	if _, err := db.BeginTx(t.Context(), nil); !errors.Is(err, cql.ErrNoTransactions) {
-		t.Errorf("got %v, want %v", err, cql.ErrNoTransactions)
+	if _, err := db.BeginTx(t.Context(), nil); !errors.Is(err, dbimp.ErrNotSupported) {
+		t.Errorf("got %v, want %v", err, dbimp.ErrNotSupported)
 	}
 }

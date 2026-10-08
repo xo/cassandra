@@ -1,4 +1,4 @@
-package cql
+package cassandra
 
 import (
 	"database/sql"
@@ -11,13 +11,14 @@ import (
 	"uuid"
 
 	gocql "github.com/apache/cassandra-gocql-driver/v2"
+	"github.com/xo/dbimp"
 )
 
 // marshaler is a type with its own CQL form and a driver.Valuer form. The
 // driver must use the CQL form.
 type marshaler struct{}
 
-func (marshaler) MarshalCQL(gocql.TypeInfo) ([]byte, error) { return []byte("cql"), nil }
+func (marshaler) MarshalCQL(gocql.TypeInfo) ([]byte, error) { return []byte("cassandra"), nil }
 func (marshaler) Value() (driver.Value, error)              { return "valuer", nil }
 
 func TestCheckNamedValue(t *testing.T) {
@@ -29,9 +30,9 @@ func TestCheckNamedValue(t *testing.T) {
 		named string
 		want  error
 	}{
-		{"named", 1, "id", ErrNamedArgs},
+		{"named", 1, "id", dbimp.ErrNotSupported},
 		{"nil", nil, "", nil},
-		{"option", PageSize(10), "", nil},
+		{"option", WithPageSize(10), "", nil},
 		{"marshaler before valuer", marshaler{}, "", nil},
 		{"valuer", sql.Null[int64]{}, "", driver.ErrSkip},
 		{"int", 1, "", nil},
@@ -42,10 +43,10 @@ func TestCheckNamedValue(t *testing.T) {
 		{"unset", gocql.UnsetValue, "", nil},
 		{"typed nil pointer", (*string)(nil), "", nil},
 		{"struct", struct{ A int }{1}, "", nil},
-		{"channel", make(chan int), "", ErrUnsupportedArg},
-		{"function", func() {}, "", ErrUnsupportedArg},
-		{"complex", complex(1, 2), "", ErrUnsupportedArg},
-		{"unsafe pointer", unsafe.Pointer(nil), "", ErrUnsupportedArg},
+		{"channel", make(chan int), "", dbimp.ErrNotSupported},
+		{"function", func() {}, "", dbimp.ErrNotSupported},
+		{"complex", complex(1, 2), "", dbimp.ErrNotSupported},
+		{"unsafe pointer", unsafe.Pointer(nil), "", dbimp.ErrNotSupported},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -89,10 +90,10 @@ func TestOptions(t *testing.T) {
 	s := &fakeSession{}
 	db := newTestDB(t, s)
 	ts := time.Date(2026, 9, 27, 0, 0, 0, 0, time.UTC)
-	ctx := WithOptions(t.Context(), Consistency(gocql.One), PageSize(10))
-	ctx = WithOptions(ctx, PageSize(20))
+	ctx := WithOptions(t.Context(), WithConsistency(gocql.One), WithPageSize(10))
+	ctx = WithOptions(ctx, WithPageSize(20))
 	if _, err := db.ExecContext(ctx, "UPDATE t SET v = ? WHERE id = ?", 1,
-		Consistency(gocql.All), 2, SerialConsistency(gocql.LocalSerial), Idempotent(true), Timestamp(ts)); err != nil {
+		WithConsistency(gocql.All), 2, WithSerialConsistency(gocql.LocalSerial), WithIdempotent(true), WithTimestamp(ts)); err != nil {
 		t.Fatal(err)
 	}
 	got := s.lastCall(t)
@@ -105,7 +106,7 @@ func TestOptions(t *testing.T) {
 	want := options{
 		consistency:       new(gocql.All),
 		serialConsistency: new(gocql.LocalSerial),
-		pageSize:          new(20),
+		pageSize:          20,
 		idempotent:        new(true),
 		timestamp:         &ts,
 	}
@@ -116,11 +117,11 @@ func TestOptions(t *testing.T) {
 
 func TestWithOptionsDoesNotShare(t *testing.T) {
 	t.Parallel()
-	base := WithOptions(t.Context(), PageSize(1), PageSize(2))
-	a := WithOptions(base, Consistency(gocql.One))
-	b := WithOptions(base, Consistency(gocql.All))
-	oa, _ := splitArgs(a, nil)
-	ob, _ := splitArgs(b, nil)
+	base := WithOptions(t.Context(), WithPageSize(1), WithPageSize(2))
+	a := WithOptions(base, WithConsistency(gocql.One))
+	b := WithOptions(base, WithConsistency(gocql.All))
+	oa, _, _ := resolve(a, nil)
+	ob, _, _ := resolve(b, nil)
 	if *oa.consistency != gocql.One || *ob.consistency != gocql.All {
 		t.Errorf("got %v and %v, want ONE and ALL", *oa.consistency, *ob.consistency)
 	}
@@ -130,11 +131,11 @@ func TestRefusedArgs(t *testing.T) {
 	t.Parallel()
 	s := &fakeSession{}
 	db := newTestDB(t, s)
-	if _, err := db.ExecContext(t.Context(), "INSERT INTO t (id) VALUES (:id)", sql.Named("id", 1)); !errors.Is(err, ErrNamedArgs) {
-		t.Errorf("got %v, want %v", err, ErrNamedArgs)
+	if _, err := db.ExecContext(t.Context(), "INSERT INTO t (id) VALUES (:id)", sql.Named("id", 1)); !errors.Is(err, dbimp.ErrNotSupported) {
+		t.Errorf("got %v, want %v", err, dbimp.ErrNotSupported)
 	}
-	if _, err := db.ExecContext(t.Context(), "INSERT INTO t (id) VALUES (?)", make(chan int)); !errors.Is(err, ErrUnsupportedArg) {
-		t.Errorf("got %v, want %v", err, ErrUnsupportedArg)
+	if _, err := db.ExecContext(t.Context(), "INSERT INTO t (id) VALUES (?)", make(chan int)); !errors.Is(err, dbimp.ErrNotSupported) {
+		t.Errorf("got %v, want %v", err, dbimp.ErrNotSupported)
 	}
 	if len(s.calls) != 0 {
 		t.Errorf("the session received %d statements, want 0", len(s.calls))
@@ -190,11 +191,11 @@ func TestPrepare(t *testing.T) {
 	if err := st.QueryRowContext(t.Context(), 7).Scan(&n); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := st.ExecContext(t.Context(), 8, PageSize(5)); err != nil {
+	if _, err := st.ExecContext(t.Context(), 8, WithPageSize(5)); err != nil {
 		t.Fatal(err)
 	}
 	got := s.lastCall(t)
-	if n != 3 || got.stmt != "SELECT n FROM t WHERE id = ?" || !reflect.DeepEqual(got.values, []any{8}) || *got.opts.pageSize != 5 {
+	if n != 3 || got.stmt != "SELECT n FROM t WHERE id = ?" || !reflect.DeepEqual(got.values, []any{8}) || got.opts.pageSize != 5 {
 		t.Errorf("got %d and %+v", n, got)
 	}
 }
@@ -202,11 +203,11 @@ func TestPrepare(t *testing.T) {
 func TestStmtWithNoContext(t *testing.T) {
 	t.Parallel()
 	st := &stmt{c: &conn{}, query: "SELECT 1"}
-	if _, err := st.Exec(nil); !errors.Is(err, ErrNoContext) {
-		t.Errorf("exec: got %v, want %v", err, ErrNoContext)
+	if _, err := st.Exec(nil); !errors.Is(err, dbimp.ErrNotSupported) {
+		t.Errorf("exec: got %v, want %v", err, dbimp.ErrNotSupported)
 	}
-	if _, err := st.Query(nil); !errors.Is(err, ErrNoContext) {
-		t.Errorf("query: got %v, want %v", err, ErrNoContext)
+	if _, err := st.Query(nil); !errors.Is(err, dbimp.ErrNotSupported) {
+		t.Errorf("query: got %v, want %v", err, dbimp.ErrNotSupported)
 	}
 	if n := st.NumInput(); n != -1 {
 		t.Errorf("got %d inputs, want -1", n)
@@ -216,7 +217,7 @@ func TestStmtWithNoContext(t *testing.T) {
 func TestNoTransactions(t *testing.T) {
 	t.Parallel()
 	db := newTestDB(t, &fakeSession{})
-	if _, err := db.BeginTx(t.Context(), nil); !errors.Is(err, ErrNoTransactions) {
-		t.Errorf("got %v, want %v", err, ErrNoTransactions)
+	if _, err := db.BeginTx(t.Context(), nil); !errors.Is(err, dbimp.ErrNotSupported) {
+		t.Errorf("got %v, want %v", err, dbimp.ErrNotSupported)
 	}
 }

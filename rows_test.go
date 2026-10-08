@@ -1,4 +1,4 @@
-package cql
+package cassandra
 
 import (
 	"database/sql"
@@ -7,6 +7,7 @@ import (
 	"io"
 	"math/big"
 	"net"
+	"net/netip"
 	"reflect"
 	"strings"
 	"testing"
@@ -14,7 +15,8 @@ import (
 	"uuid"
 
 	gocql "github.com/apache/cassandra-gocql-driver/v2"
-	"gopkg.in/inf.v0"
+	"github.com/cockroachdb/apd/v3"
+	"github.com/xo/dbimp"
 )
 
 // scanOne runs a query over a fake result of one column and one row, and
@@ -53,22 +55,22 @@ func TestScanCanonical(t *testing.T) {
 		{"counter", native(gocql.TypeCounter), int64(7), int64(7)},
 		{"float", native(gocql.TypeFloat), float32(1.5), float64(1.5)},
 		{"double", native(gocql.TypeDouble), 2.25, 2.25},
-		{"varint", native(gocql.TypeVarint), varint, "123456789012345678901234567890"},
-		{"decimal", native(gocql.TypeDecimal), inf.NewDec(150, 2), "1.50"},
+		{"varint", native(gocql.TypeVarint), varint, varint},
+		{"decimal", native(gocql.TypeDecimal), decimal{apd.New(150, -2)}, apd.New(150, -2)},
 		{"timestamp", native(gocql.TypeTimestamp), ts, ts.UTC()},
-		{"date", native(gocql.TypeDate), date, date},
-		{"time", native(gocql.TypeTime), 90 * time.Second, 90 * time.Second},
-		{"duration", native(gocql.TypeDuration), gocql.Duration{Months: 1, Days: 2, Nanoseconds: 3}, gocql.Duration{Months: 1, Days: 2, Nanoseconds: 3}},
+		{"date", native(gocql.TypeDate), date, dbimp.Date{Year: 2026, Month: time.September, Day: 27}},
+		{"time", native(gocql.TypeTime), 90 * time.Second, dbimp.LocalTime{Minute: 1, Second: 30}},
+		{"duration", native(gocql.TypeDuration), gocql.Duration{Months: 1, Days: 2, Nanoseconds: 3}, dbimp.Interval{Months: 1, Days: 2, Nanoseconds: 3}},
 		{"uuid", native(gocql.TypeUUID), id, uuid.UUID(id)},
 		{"timeuuid", native(gocql.TypeTimeUUID), id, uuid.UUID(id)},
-		{"inet", native(gocql.TypeInet), net.ParseIP("10.0.0.1"), "10.0.0.1"},
-		{"list", parse("list<int>"), []int{1, 2}, []int{1, 2}},
-		{"set", parse("set<text>"), []string{"a", "b"}, []string{"a", "b"}},
-		{"map", parse("map<text, int>"), map[string]int{"a": 1}, map[string]int{"a": 1}},
+		{"inet", native(gocql.TypeInet), net.ParseIP("10.0.0.1"), netip.MustParseAddr("10.0.0.1")},
+		{"list", parse("list<int>"), []int{1, 2}, []any{int64(1), int64(2)}},
+		{"set", parse("set<text>"), []string{"a", "b"}, []any{"a", "b"}},
+		{"map", parse("map<text, int>"), map[string]int{"a": 1}, map[string]any{"a": int64(1)}},
 		{"tuple", gocql.TupleTypeInfo{Elems: []gocql.TypeInfo{native(gocql.TypeInt), native(gocql.TypeText)}}, []any{7, "a"}, []any{int64(7), "a"}},
 		{"tuple with null", gocql.TupleTypeInfo{Elems: []gocql.TypeInfo{native(gocql.TypeInt), native(gocql.TypeText)}}, []any{7, nil}, []any{int64(7), nil}},
-		{"udt", udt(), map[string]any{"street": "main", "number": 4}, map[string]any{"street": "main", "number": 4}},
-		{"vector", parse("vector<float, 3>"), []float32{1, 2, 3}, []float32{1, 2, 3}},
+		{"udt", udt(), map[string]any{"street": "main", "number": 4}, map[string]any{"street": "main", "number": int64(4)}},
+		{"vector", parse("vector<float, 3>"), []float32{1, 2, 3}, dbimp.Vector[float32]{1, 2, 3}},
 		{"empty int", native(gocql.TypeInt), empty{}, int64(0)},
 	}
 	for _, test := range tests {
@@ -320,7 +322,7 @@ func TestColumnTypes(t *testing.T) {
 		scan     reflect.Type
 	}{
 		{"a", "VARCHAR", reflect.TypeFor[string]()},
-		{"b", "MAP<TEXT, LIST<INT>>", reflect.TypeFor[map[string][]int]()},
+		{"b", "MAP<TEXT, LIST<INT>>", reflect.TypeFor[map[string]any]()},
 		{"c", "Address", reflect.TypeFor[map[string]any]()},
 	}
 	for i, ct := range types {
