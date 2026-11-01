@@ -169,3 +169,37 @@ func TestTheDriverRegistersOneName(t *testing.T) {
 		t.Errorf("got the drivers %v, want only %q", found, Name)
 	}
 }
+
+func TestAuthenticationRefused(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"typed", &gocql.RequestErrCredentials{}, true},
+		{"text", errors.New("unable to connect to initial hosts: Provided username a and/or password are incorrect"), true},
+		{"other", errors.New("no hosts"), false},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			c := newTestConnector(&fakeSession{})
+			c.newSession = func(gocql.ClusterConfig) (session, error) { return nil, test.err }
+			_, err := c.Connect(t.Context())
+			if err == nil {
+				t.Fatal("expected an error")
+			}
+			if got := errors.Is(err, ErrAuthentication); got != test.want {
+				t.Errorf("Is(ErrAuthentication) = %t, want %t", got, test.want)
+			}
+			var r interface{ AuthenticationRefused() bool }
+			if got := errors.As(err, &r) && r.AuthenticationRefused(); got != test.want {
+				t.Errorf("AuthenticationRefused = %t, want %t", got, test.want)
+			}
+		})
+	}
+	if !ErrAuthentication.AuthenticationRefused() || ErrConnectorClosed.AuthenticationRefused() {
+		t.Error("the method of Error is wrong")
+	}
+}

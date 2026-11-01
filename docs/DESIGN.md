@@ -436,6 +436,15 @@ The driver returns every gocql error wrapped with `%w`. So
 finds `gocql.ErrSessionClosed`. A test must confirm which of these gocql
 returns as a pointer and which as a value.
 
+An error that says the server refused the credential matches
+`ErrAuthentication` and has the method `AuthenticationRefused() bool`, which
+usql asks of an error. It is true for a wrong username or password and false
+for a refusal for lack of a permission. gocql gives
+`*gocql.RequestErrCredentials` once a session exists. While it creates the
+session, gocql formats the error with `%v`, so the type is lost and the driver
+reads the text "password are incorrect". `refusal` in `errors.go` does both,
+and `TestAuthenticationRefused` covers it.
+
 The driver never returns `driver.ErrBadConn` from a statement.
 `database/sql` answers `ErrBadConn` by trying the statement again on another
 `conn`. Every `conn` shares one session, so the second try meets the same
