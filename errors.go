@@ -62,9 +62,23 @@ func refusal(err error) error {
 	if err == nil {
 		return nil
 	}
-	var c *gocql.RequestErrCredentials
-	if errors.As(err, &c) || strings.Contains(err.Error(), "password are incorrect") {
+	if _, ok := errors.AsType[*gocql.RequestErrCredentials](err); ok {
 		return &authError{err: err}
 	}
+	msg := err.Error()
+	for _, text := range refusalTexts {
+		if strings.Contains(msg, text) {
+			return &authError{err: err}
+		}
+	}
 	return err
+}
+
+// refusalTexts are the messages that mark a refused credential once gocql has
+// lost the type of the error: a wrong password, a password that the client did
+// not send, and a server that wants authentication where the client has none.
+var refusalTexts = []string{
+	"password are incorrect",
+	"Password must not be null",
+	"authentication required (using",
 }

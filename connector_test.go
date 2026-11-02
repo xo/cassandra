@@ -179,6 +179,8 @@ func TestAuthenticationRefused(t *testing.T) {
 	}{
 		{"typed", &gocql.RequestErrCredentials{}, true},
 		{"text", errors.New("unable to connect to initial hosts: Provided username a and/or password are incorrect"), true},
+		{"no password", errors.New("gocql: unable to create session: unable to discover protocol version: Password must not be null"), true},
+		{"required", errors.New("unable to connect to initial hosts: authentication required (using \"org.apache.cassandra.auth.PasswordAuthenticator\")"), true},
 		{"other", errors.New("no hosts"), false},
 	}
 	for _, test := range tests {

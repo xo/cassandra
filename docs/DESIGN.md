@@ -442,7 +442,9 @@ usql asks of an error. It is true for a wrong username or password and false
 for a refusal for lack of a permission. gocql gives
 `*gocql.RequestErrCredentials` once a session exists. While it creates the
 session, gocql formats the error with `%v`, so the type is lost and the driver
-reads the text "password are incorrect". `refusal` in `errors.go` does both,
+reads the text of a wrong password ("password are incorrect"), of a password
+that the client did not send ("Password must not be null"), and of a server
+that wants authentication ("authentication required (using"). `refusal` in `errors.go` does both,
 and `TestAuthenticationRefused` covers it.
 
 The driver never returns `driver.ErrBadConn` from a statement.
