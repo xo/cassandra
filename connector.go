@@ -87,7 +87,7 @@ func (c *Connector) connect() (*conn, error) {
 	if c.sess == nil {
 		sess, err := c.newSession(c.cfg)
 		if err != nil {
-			return nil, fmt.Errorf("creating session: %w", refusal(err))
+			return nil, fmt.Errorf("creating session: %w", wrap(err))
 		}
 		c.sess = sess
 	}

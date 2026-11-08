@@ -205,3 +205,57 @@ func TestAuthenticationRefused(t *testing.T) {
 		t.Error("the method of Error is wrong")
 	}
 }
+
+// replyError is a reply of the server with the code that a test chooses, which
+// gocql gives no way to set from outside its package.
+type replyError struct {
+	code int
+	msg  string
+}
+
+func (r replyError) Code() int       { return r.code }
+func (r replyError) Message() string { return r.msg }
+func (r replyError) Error() string   { return r.msg }
+
+func TestErrVerbose(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{
+			"invalid",
+			replyError{gocql.ErrCodeInvalid, "table x does not exist"},
+			`Error from server: code=2200 [Invalid query] message="table x does not exist"`,
+		},
+		{
+			"unavailable",
+			&gocql.RequestErrUnavailable{Consistency: gocql.Quorum, Required: 2, Alive: 1},
+			`Error from server: code=0000 [Server error] message="" info={consistency: QUORUM, required_replicas: 2, alive_replicas: 1}`,
+		},
+		{"no reply", errors.New("no hosts"), ""},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			c := newTestConnector(&fakeSession{})
+			c.newSession = func(gocql.ClusterConfig) (session, error) { return nil, test.err }
+			_, err := c.Connect(t.Context())
+			if err == nil {
+				t.Fatal("expected an error")
+			}
+			var v interface{ ErrVerbose(query string) string }
+			ok := errors.As(err, &v)
+			if got := ok; got != (test.want != "") {
+				t.Fatalf("has ErrVerbose = %t, want %t", got, test.want != "")
+			}
+			if !ok {
+				return
+			}
+			if got := v.ErrVerbose("select 1"); got != test.want {
+				t.Errorf("got %q, want %q", got, test.want)
+			}
+		})
+	}
+}

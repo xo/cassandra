@@ -72,7 +72,7 @@ func errNoTransactions() error {
 // Ping reads the release version of the node that answers.
 func (c *conn) Ping(ctx context.Context) error {
 	if err := c.s.exec(ctx, pingStmt, nil, options{}); err != nil {
-		return fmt.Errorf("pinging cluster: %w", refusal(err))
+		return fmt.Errorf("pinging cluster: %w", wrap(err))
 	}
 	return nil
 }
@@ -88,7 +88,7 @@ func (c *conn) ExecContext(ctx context.Context, query string, args []driver.Name
 	ctx, cancel := o.withTimeout(ctx)
 	defer cancel()
 	if err := c.s.exec(ctx, query, values, o); err != nil {
-		return nil, fmt.Errorf("executing statement: %w", refusal(err))
+		return nil, fmt.Errorf("executing statement: %w", wrap(err))
 	}
 	return driver.ResultNoRows, nil
 }
@@ -104,7 +104,7 @@ func (c *conn) QueryContext(ctx context.Context, query string, args []driver.Nam
 	it, err := c.s.query(ctx, query, values, o)
 	if err != nil {
 		cancel()
-		return nil, fmt.Errorf("running query: %w", refusal(err))
+		return nil, fmt.Errorf("running query: %w", wrap(err))
 	}
 	r := newRows(it)
 	r.cancel = cancel
