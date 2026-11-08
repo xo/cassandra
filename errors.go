@@ -56,25 +56,35 @@ func (e *serverError) Is(target error) bool { return e.refused && target == ErrA
 // AuthenticationRefused reports whether the server refused the credential.
 func (e *serverError) AuthenticationRefused() bool { return e.refused }
 
-// ErrVerbose returns every field that the server gave, in the form of cqlsh,
-// such as
+// ErrVerbose returns every field that the server gave, in the form that psql
+// writes for \errverbose, so that the output is the same for every database:
 //
-//	Error from server: code=2200 [Invalid query] message="table x does not exist"
+//	ERROR:  2200: table x does not exist
+//	DETAIL:  Invalid query
+//
+// The first line holds the severity, the code of the protocol as cqlsh writes
+// it, in hexadecimal, and the message. The name of the code and each field of
+// the reply, such as the consistency, follow as a DETAIL line each. There is
+// no trailing newline.
 //
 // usql asks an error for it, for \errverbose, and declares the interface
 // itself, so this package imports nothing of usql. A server gives no position
-// in the statement, so query is not used. It returns "" for an error that has
-// no reply of the server, such as one from before the session exists.
+// in the statement, so there is no LINE and no caret, and query is not used.
+// It returns "" for an error that has no reply of the server, such as one from
+// before the session exists.
 func (e *serverError) ErrVerbose(string) string {
 	r, ok := errors.AsType[gocql.RequestError](e.err)
 	if !ok {
 		return ""
 	}
-	s := fmt.Sprintf("Error from server: code=%04x [%s] message=%q", r.Code(), codeName(r.Code()), r.Message())
-	if info := fields(r); len(info) != 0 {
-		s += " info={" + strings.Join(info, ", ") + "}"
+	lines := []string{
+		fmt.Sprintf("ERROR:  %04x: %s", r.Code(), r.Message()),
+		"DETAIL:  " + codeName(r.Code()),
 	}
-	return s
+	for _, field := range fields(r) {
+		lines = append(lines, "DETAIL:  "+field)
+	}
+	return strings.Join(lines, "\n")
 }
 
 // codeName returns the name that cqlsh gives to an error code of the protocol.

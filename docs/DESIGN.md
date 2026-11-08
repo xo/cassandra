@@ -449,9 +449,11 @@ and `TestAuthenticationRefused` covers it.
 
 An error that holds a reply of the server also has the method
 `ErrVerbose(query string) string`, which usql asks of an error for
-`\errverbose` (`drivers.VerboseError` in usql). It writes the reply as cqlsh
-does, with the code, the name of the code, the message and the fields of the
-reply, such as `Error from server: code=2200 [Invalid query] message="..."`.
+`\errverbose` (`drivers.VerboseError` in usql). It writes the reply in the
+form of psql, so that every database looks the same: `ERROR:  2200: message`,
+where the code is the one that cqlsh writes, in hexadecimal, then a `DETAIL:  `
+line for the name of the code, such as `Invalid query`, and one for each field
+of the reply, such as `consistency: QUORUM`. There is no trailing newline.
 The server gives no position in the statement, so `query` is not used. An error
 with no reply of the server, such as one from before the session exists, gives
 "" and usql prints the plain message. `TestErrVerbose` covers it.

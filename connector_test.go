@@ -227,12 +227,12 @@ func TestErrVerbose(t *testing.T) {
 		{
 			"invalid",
 			replyError{gocql.ErrCodeInvalid, "table x does not exist"},
-			`Error from server: code=2200 [Invalid query] message="table x does not exist"`,
+			"ERROR:  2200: table x does not exist\nDETAIL:  Invalid query",
 		},
 		{
 			"unavailable",
 			&gocql.RequestErrUnavailable{Consistency: gocql.Quorum, Required: 2, Alive: 1},
-			`Error from server: code=0000 [Server error] message="" info={consistency: QUORUM, required_replicas: 2, alive_replicas: 1}`,
+			"ERROR:  0000: \nDETAIL:  Server error\nDETAIL:  consistency: QUORUM\nDETAIL:  required_replicas: 2\nDETAIL:  alive_replicas: 1",
 		},
 		{"no reply", errors.New("no hosts"), ""},
 	}
