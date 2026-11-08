@@ -13,11 +13,17 @@
 
 [![Unit Tests][cassandra-ci-status]][cassandra-ci]
 [![Go Reference][goref-cassandra-status]][goref-cassandra]
+[![Releases][release-status]][releases]
+[![Discord Discussion][discord-status]][discord]
 
 [cassandra-ci]: https://github.com/xo/cassandra/actions/workflows/test.yml "Test CI"
 [cassandra-ci-status]: https://github.com/xo/cassandra/actions/workflows/test.yml/badge.svg "Test CI"
 [goref-cassandra]: https://pkg.go.dev/github.com/xo/cassandra "Go Reference"
 [goref-cassandra-status]: https://pkg.go.dev/badge/github.com/xo/cassandra.svg "Go Reference"
+[release-status]: https://img.shields.io/github/v/release/xo/cassandra?display_name=tag "Latest Release"
+[releases]: https://github.com/xo/cassandra/releases "Releases"
+[discord]: https://discord.gg/WDWAgXwJqN "Discord Discussion"
+[discord-status]: https://img.shields.io/discord/829150509658013727.svg?label=Discord&logo=Discord&colorB=7289da&style=flat-square "Discord Discussion"
 
 # About
 
@@ -296,6 +302,20 @@ how to start a server with `dbrun`.
 MIT. `cassandra` began as a fork of
 [MichaelS11/go-cql-driver](https://github.com/MichaelS11/go-cql-driver), and
 [LICENSE](LICENSE) keeps its notice.
+
+<br/>
+
+<div align="center">
+  <a href="https://github.com/xo/usql" title="A command line client for many databases">usql</a> |
+  <a href="https://github.com/xo/dburl" title="Database connection URLs">dburl</a> |
+  <a href="https://github.com/xo/dbmeta" title="Database metadata">dbmeta</a> |
+  <a href="https://github.com/xo/dbimp" title="Database drivers in pure Go">dbimp</a> |
+  <a href="https://github.com/xo/cassandra" title="A database/sql driver for Cassandra, this project">cassandra</a> |
+  <a href="https://github.com/xo/dbtpl" title="Go code generated from a database">dbtpl</a> |
+  <a href="https://github.com/xo/tblfmt" title="Tables of database results">tblfmt</a> |
+  <a href="https://github.com/xo/rline" title="The line editor of usql">rline</a> |
+  <a href="https://github.com/xo/transit" title="tree-sitter in pure Go">transit</a>
+</div>
 
 [database/sql]: https://pkg.go.dev/database/sql
 [cassandra-db]: https://cassandra.apache.org
