@@ -12,7 +12,19 @@ before you change anything:
 [`AGENTS.md`](AGENTS.md) holds the rules. `AGENTS.md` is written for a coding
 agent, and everything in it applies to a person.
 
-## Before you send a change
+## Where to talk
+
+This repository has no issues and no pull requests. GitHub Discussions is the
+one place to talk about the project:
+[github.com/xo/cassandra/discussions](https://github.com/xo/cassandra/discussions).
+
+To report a bug, ask a question or propose a change, open a discussion. Say
+which release of the driver and which server you use, and show the statement and
+the error. Ken reads the discussions. To propose a change to the code, describe
+it in a discussion before you write it, because an open question in
+`docs/PLAN.md` can decide the answer.
+
+## Before you propose a change
 
 Run these in the repository root. `gofmt -l .` must print nothing.
 

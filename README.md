@@ -6,7 +6,8 @@
   <a href="#statements" title="Statements">Statements</a> |
   <a href="#scanning" title="Scanning">Scanning</a> |
   <a href="#related-projects" title="Related Projects">Related Projects</a> |
-  <a href="#testing" title="Testing">Testing</a>
+  <a href="#testing" title="Testing">Testing</a> |
+  <a href="#contributing" title="Contributing">Contributing</a>
 </div>
 
 <br/>
@@ -296,6 +297,14 @@ how to start a server with `dbrun`.
 | [docs/BACKLOG.md](docs/BACKLOG.md) | the planned work |
 | [AGENTS.md](AGENTS.md) | the rules for a coding agent |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | the rules for a person |
+
+# Contributing
+
+This repository has no issues and no pull requests. To report a bug, ask a
+question or propose a change, open a
+[discussion](https://github.com/xo/cassandra/discussions). Say which release of
+the driver and which server you use, and show the statement and the error.
+[CONTRIBUTING.md](CONTRIBUTING.md) has the rules for a change.
 
 # License
 
